@@ -62,7 +62,7 @@ conda resolve --serve --port 8000
 sizes, depends, and constrains.
 
 ```bash
-conda-resolve -c conda-forge -p linux-64 zlib
+conda resolve -c conda-forge -p linux-64 zlib
 ```
 
 ```json
@@ -91,13 +91,13 @@ conda-resolve -c conda-forge -p linux-64 zlib
 compatible with `conda create --file`.
 
 ```bash
-conda-resolve -c conda-forge -p linux-64 --format explicit zlib
+conda resolve -c conda-forge -p linux-64 --format explicit zlib
 ```
 
 **YAML** (`--format yaml`): conda environment.yml format.
 
 ```bash
-conda-resolve -c conda-forge -p linux-64 --format yaml zlib
+conda resolve -c conda-forge -p linux-64 --format yaml zlib
 ```
 
 Other formats can be provided by conda exporter plugins
