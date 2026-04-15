@@ -9,11 +9,15 @@ from conda.models.environment import Environment
 from conda.models.records import PackageRecord
 
 from conda_resolve.resolve import (
+    INDEX_TTL_SECONDS,
     ResolvedPackage,
     SolveResult,
-    _run_solver,
     configure_context,
+    configure_platform,
+    get_or_build_index,
     get_process_pool,
+    index_cache,
+    run_solver,
     solve,
     solve_environments,
     solve_one_platform,
@@ -152,7 +156,7 @@ def test_get_process_pool_threadsafe():
 
 
 def test_run_solver_returns_records():
-    records = _run_solver(
+    records = run_solver(
         channels=("conda-forge",),
         dependencies=["zlib"],
         platform="linux-64",
@@ -167,7 +171,7 @@ def test_run_solver_unsatisfiable():
     from conda.exceptions import PackagesNotFoundError, UnsatisfiableError
 
     with pytest.raises((UnsatisfiableError, PackagesNotFoundError)):
-        _run_solver(
+        run_solver(
             channels=("conda-forge",),
             dependencies=["__nonexistent_package_xyz__"],
             platform="linux-64",
@@ -288,3 +292,67 @@ def test_solve_varying_deps(deps):
     for dep in deps:
         name = dep.split("=")[0].split(">")[0].split("<")[0].strip()
         assert name in resolved_names
+
+
+# ---------------------------------------------------------------------------
+# Index cache tests
+# ---------------------------------------------------------------------------
+
+
+def test_index_cache_returns_same_object():
+    """Calling get_or_build_index twice returns the cached instance."""
+    from conda_resolve.resolve import solver_lock
+
+    with solver_lock:
+        configure_platform("linux-64")
+        configure_context()
+        idx1 = get_or_build_index(("conda-forge",), "linux-64")
+        idx2 = get_or_build_index(("conda-forge",), "linux-64")
+    assert idx1 is idx2
+
+
+def test_index_cache_different_platforms():
+    """Different platforms get separate cache entries."""
+    from conda_resolve.resolve import solver_lock
+
+    with solver_lock:
+        configure_platform("linux-64")
+        configure_context()
+        idx_linux = get_or_build_index(("conda-forge",), "linux-64")
+
+        configure_platform("osx-arm64")
+        idx_osx = get_or_build_index(("conda-forge",), "osx-arm64")
+
+    assert idx_linux is not idx_osx
+
+
+def test_index_cache_expires(monkeypatch):
+    """Expired cache entries are rebuilt."""
+    import time as time_mod
+
+    from conda_resolve.resolve import solver_lock
+
+    with solver_lock:
+        configure_platform("linux-64")
+        configure_context()
+        idx1 = get_or_build_index(("conda-forge",), "linux-64")
+
+        key = (("conda-forge",), "linux-64")
+        old_index, _ = index_cache[key]
+        index_cache[key] = (
+            old_index,
+            time_mod.monotonic() - INDEX_TTL_SECONDS - 1,
+        )
+
+        idx2 = get_or_build_index(("conda-forge",), "linux-64")
+
+    assert idx2 is not idx1
+
+
+def test_cached_solve_produces_correct_results():
+    """Two back-to-back solves produce identical results (cache hit)."""
+    r1 = solve(["conda-forge"], ["zlib"], ["linux-64"])
+    r2 = solve(["conda-forge"], ["zlib"], ["linux-64"])
+    names1 = [p.name for p in r1[0].packages]
+    names2 = [p.name for p in r2[0].packages]
+    assert names1 == names2

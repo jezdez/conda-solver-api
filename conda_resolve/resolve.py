@@ -6,9 +6,13 @@ against conda channels and returns fully-pinned package metadata
 installing anything.
 
 Performance notes:
+    - The ``index_cache`` stores pre-built ``RattlerIndexHelper``
+      objects keyed by ``(channels, platform)``.  Building this index
+      (~700 ms) is the dominant cost of a solve; caching it reduces
+      repeat solves to just the SAT time (~20-100 ms).
     - Multi-platform solves run in a persistent ``ProcessPoolExecutor``
-      to bypass the GIL. Workers retain their in-memory ``SubdirData``
-      and solver index caches across requests.
+      to bypass the GIL. Workers retain their own index caches across
+      requests.
     - All arguments to ``solve_one_platform`` are plain strings/tuples
       so they serialize cheaply for cross-process dispatch.
     - ``ResolvedPackage`` uses ``slots=True`` and stores depends/constrains
@@ -18,7 +22,7 @@ Performance notes:
       which performs a recursive deep-copy of all nested structures.
 
 Security notes:
-    - ``_run_solver`` is protected by ``_solver_lock`` so that
+    - ``run_solver`` is protected by ``solver_lock`` so that
       concurrent threads (from ``anyio.to_thread``) cannot race on the
       process-global ``os.environ`` and ``context`` state.
     - Solver errors are caught and returned as error strings in the
@@ -30,15 +34,14 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from operator import attrgetter
 
 from conda.base.context import context
-from conda.core.subdir_data import SubdirData
 from conda.exceptions import PackagesNotFoundError, UnsatisfiableError
-from conda.models.channel import Channel
 from conda.models.environment import Environment
 from conda.models.match_spec import MatchSpec
 from conda.models.records import PackageRecord
@@ -59,9 +62,12 @@ VIRTUAL_PACKAGE_DEFAULTS: dict[str, dict[str, str]] = {
     },
 }
 
-_current_platform: str | None = None
-_solver_lock = threading.Lock()
-_context_configured = False
+INDEX_TTL_SECONDS = 300
+
+current_platform: str | None = None
+solver_lock = threading.Lock()
+context_configured = False
+index_cache: dict[tuple[tuple[str, ...], str], tuple[object, float]] = {}
 
 
 def configure_platform(platform: str):
@@ -71,7 +77,7 @@ def configure_platform(platform: str):
     generates the correct virtual packages (``__glibc``, ``__linux``,
     ``__osx``, etc.) for the target platform rather than the host.
 
-    Callers must hold ``_solver_lock`` when calling this function,
+    Callers must hold ``solver_lock`` when calling this function,
     since it mutates process-global state (``os.environ``, conda
     ``context``).
 
@@ -80,8 +86,8 @@ def configure_platform(platform: str):
     Only sets overrides if not already present in the environment,
     allowing callers to provide their own values.
     """
-    global _current_platform
-    if _current_platform == platform:
+    global current_platform
+    if current_platform == platform:
         return
 
     os.environ["CONDA_SUBDIR"] = platform
@@ -93,7 +99,7 @@ def configure_platform(platform: str):
             break
 
     context.__init__()
-    _current_platform = platform
+    current_platform = platform
 
 
 @dataclass(slots=True)
@@ -194,28 +200,62 @@ def configure_context():
     Also expected via environment: ``CONDA_JSON=true`` (set via pixi
     activation) so child processes inherit the setting.
     """
-    global _context_configured
-    if _context_configured:
+    global context_configured
+    if context_configured:
         return
     context.json = True
-    _context_configured = True
+    context_configured = True
 
 
-def _run_solver(
+def get_or_build_index(
+    channels: tuple[str, ...],
+    platform: str,
+) -> object:
+    """Return a cached ``RattlerIndexHelper``, rebuilding if stale.
+
+    The index is keyed by ``(channels, platform)`` and cached for
+    ``INDEX_TTL_SECONDS``.  Caller must hold ``solver_lock``.
+    """
+    from conda_rattler_solver.index import RattlerIndexHelper
+
+    key = (channels, platform)
+    cached = index_cache.get(key)
+    now = time.monotonic()
+
+    if cached is not None:
+        index, built_at = cached
+        if now - built_at < INDEX_TTL_SECONDS:
+            return index
+        log.debug("Index expired for %s/%s, rebuilding", channels, platform)
+
+    index = RattlerIndexHelper(
+        channels=list(channels),
+        subdirs=(platform, "noarch"),
+    )
+    index_cache[key] = (index, now)
+    return index
+
+
+def run_solver(
     channels: tuple[str, ...],
     dependencies: list[str],
     platform: str,
 ) -> list[PackageRecord]:
     """Run the conda solver and return raw ``PackageRecord`` objects.
 
-    Holds ``_solver_lock`` while configuring platform/context and
+    Holds ``solver_lock`` while configuring platform/context and
     running the solver to prevent concurrent threads from clobbering
     the process-global ``os.environ`` and conda ``context``.
+
+    Uses a cached ``RattlerIndexHelper`` so that repeated solves for
+    the same channels/platform skip the ~700 ms index-build step.
 
     Returns records sorted by name.  Raises on solver failure so
     callers can handle errors in their own way.
     """
-    with _solver_lock:
+    from conda_rattler_solver.state import SolverInputState, SolverOutputState
+
+    with solver_lock:
         configure_platform(platform)
         configure_context()
 
@@ -225,6 +265,8 @@ def _run_solver(
         if solver_backend is None:
             raise RuntimeError("No solver backend found")
 
+        index = get_or_build_index(channels, platform)
+
         solver = solver_backend(
             prefix="/env/does/not/exist",
             channels=channels or context.channels,
@@ -233,11 +275,19 @@ def _run_solver(
             command="create",
         )
 
-        records = solver.solve_final_state()
+        in_state = SolverInputState(
+            prefix=solver.prefix,
+            requested=solver.specs_to_add,
+            command="create",
+        )
+        out_state = SolverOutputState(solver_input_state=in_state)
+        out_state = solver._solving_loop(in_state, out_state, index)
+        records = list(out_state.current_solution)
+
     return sorted(records, key=attrgetter("name"))
 
 
-def _dispatch[T](
+def dispatch[T](
     solver_fn: Callable[[tuple[str, ...], list[str], str], T],
     channels: tuple[str, ...],
     dependencies: list[str],
@@ -296,7 +346,7 @@ def solve_one_platform(
     ``ResolvedPackage`` objects for fast serialization and low memory.
     """
     try:
-        records = _run_solver(channels, dependencies, platform)
+        records = run_solver(channels, dependencies, platform)
     except (
         UnsatisfiableError,
         PackagesNotFoundError,
@@ -311,7 +361,7 @@ def solve_one_platform(
     return SolveResult(platform=platform, packages=packages)
 
 
-def _solve_result_error(platform: str, exc: Exception) -> SolveResult:
+def solve_result_error(platform: str, exc: Exception) -> SolveResult:
     """Wrap an exception as a ``SolveResult`` with an error message."""
     log.warning("Solver dispatch error for %s: %s", platform, exc)
     return SolveResult(platform=platform, packages=[], error=str(exc))
@@ -328,12 +378,12 @@ def solve(
     multi-platform solves are dispatched to a persistent process pool.
     Errors are captured per-platform rather than raised.
     """
-    return _dispatch(
+    return dispatch(
         solve_one_platform,
         tuple(channels),
         dependencies,
         platforms or [context.subdir],
-        on_error=_solve_result_error,
+        on_error=solve_result_error,
     )
 
 
@@ -353,7 +403,7 @@ def solve_one_environment(
     without conversion, so conda's exporter plugins can use them
     directly.  Raises on solver failure.
     """
-    records = _run_solver(channels, dependencies, platform)
+    records = run_solver(channels, dependencies, platform)
     return Environment(
         platform=platform,
         explicit_packages=records,
@@ -370,7 +420,7 @@ def solve_environments(
     Used by the CLI.  Multi-platform solves are dispatched to the
     process pool.  Errors propagate as exceptions.
     """
-    return _dispatch(
+    return dispatch(
         solve_one_environment,
         tuple(channels),
         dependencies,
@@ -378,8 +428,8 @@ def solve_environments(
     )
 
 
-_process_pool: ProcessPoolExecutor | None = None
-_pool_lock = threading.Lock()
+process_pool: ProcessPoolExecutor | None = None
+pool_lock = threading.Lock()
 
 
 def get_process_pool() -> ProcessPoolExecutor:
@@ -394,49 +444,43 @@ def get_process_pool() -> ProcessPoolExecutor:
     smaller — 4 is enough for the common 3-platform case and avoids
     over-subscribing on smaller machines.
     """
-    global _process_pool
-    if _process_pool is not None:
-        return _process_pool
-    with _pool_lock:
-        if _process_pool is None:
+    global process_pool
+    if process_pool is not None:
+        return process_pool
+    with pool_lock:
+        if process_pool is None:
             workers = min(4, os.cpu_count() or 4)
-            _process_pool = ProcessPoolExecutor(max_workers=workers)
-        return _process_pool
+            process_pool = ProcessPoolExecutor(max_workers=workers)
+        return process_pool
 
 
-def _warmup_subdirs(channels: list[str], platforms: list[str]):
-    """Load SubdirData for each channel/subdir to populate on-disk cache.
+def warmup_indexes(channels: list[str], platforms: list[str]):
+    """Pre-build and cache ``RattlerIndexHelper`` for each platform.
 
-    This forces conda to fetch and cache repodata so subsequent solves
-    don't pay the network I/O cost.
+    This does the expensive repodata fetch + parse once so that the
+    first real solve request hits the cache and only pays SAT time.
     """
-    if platforms:
-        configure_platform(platforms[0])
-    configure_context()
-    # dict.fromkeys preserves insertion order and deduplicates
-    subdirs = list(dict.fromkeys(
-        subdir
-        for platform in platforms
-        for subdir in (platform, "noarch")
-    ))
-    for channel_name in channels:
-        for subdir in subdirs:
-            SubdirData(Channel(f"{channel_name}/{subdir}")).load()
+    ch = tuple(channels)
+    with solver_lock:
+        for platform in platforms:
+            configure_platform(platform)
+            configure_context()
+            get_or_build_index(ch, platform)
 
 
 def warmup(channels: list[str], platforms: list[str]):
-    """Pre-warm caches for both the parent process and worker pool.
+    """Pre-warm index caches for both the parent process and worker pool.
 
-    Warms the on-disk repodata cache in the parent process first,
-    then dispatches warmup tasks to each worker process so they
-    build their own in-memory SubdirData caches.  This ensures the
-    first real solve request doesn't pay the full cold-start cost.
+    Builds cached indexes in the parent process first, then dispatches
+    warmup tasks to each worker process so they build their own
+    in-memory index caches.  This ensures the first real solve request
+    doesn't pay the full cold-start cost.
     """
-    _warmup_subdirs(channels, platforms)
+    warmup_indexes(channels, platforms)
 
     pool = get_process_pool()
     futures = [
-        pool.submit(_warmup_subdirs, channels, [p]) for p in platforms
+        pool.submit(warmup_indexes, channels, [p]) for p in platforms
     ]
     for f in futures:
         f.result()
