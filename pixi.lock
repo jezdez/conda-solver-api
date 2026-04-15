@@ -1402,7 +1402,7 @@ packages:
 - pypi: ./
   name: conda-resolve
   version: 0.1.0
-  sha256: 345d2b92d98fa44a96b41d6cf01b754161fd69186dacbe954d9929c2e60b9a6e
+  sha256: 321265e0d5f1a2fe684e8de7145675cf1327412222acbda84d1bc673a654dbb3
   requires_python: '>=3.13'
 - conda: https://conda.anaconda.org/conda-forge/linux-64/coverage-7.13.5-py313h3dea7bd_0.conda
   sha256: 4b38c6648d0ccd6dca1d1e0d826609aaf2fabfd662257c1fff00bdd0e69e02da
