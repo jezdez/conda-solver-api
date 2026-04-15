@@ -9,45 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Code coverage integrated into default test runs (`--cov` via pytest
-  addopts) with a 95% `fail_under` threshold.
-- New `test_exporter.py` test module for the `resolve-json` exporter.
-- Tests for previously uncovered paths: lifespan initialization,
-  cache clear endpoint, internal solver errors, dispatch error
-  handling (single- and multi-platform), `warmup`/`warmup_indexes`,
-  CLI serve branch, `_load_files` error path, and exporter edge cases.
-- `minimal_record` fixture in `conftest.py` for testing empty optional
-  fields.
-
-### Changed
-
-- Parameterized and consolidated tests across all test modules,
-  reducing redundancy: merged duplicate `_record_to_dict` tests,
-  dispatch error tests, defaults-to-current-platform tests, internal
-  error endpoint tests, environment-yml platform tests, CLI file
-  tests, and exporter edge case tests.
-- Coverage improved from 86% to 99%.
-
-## [0.1.0] - 2026-04-15
-
-### Added
-
 - Core solver module (`resolve.py`) with `ResolvedPackage` and
   `SolveResult` dataclasses using `slots=True` for memory efficiency.
 - Split architecture: CLI uses conda's `Environment` model directly
   via `solve_environments()`, server uses lightweight custom types
   via `solve()` for fast JSON serialization.
-- Shared `_dispatch()` helper for single- and multi-platform solving,
+- Shared `dispatch()` helper for single- and multi-platform solving,
   with per-platform error handling for the server path.
 - Multi-platform parallel solving via `ProcessPoolExecutor` with
   persistent worker pool for cross-request cache reuse.
 - Cross-platform virtual package injection (`configure_platform()`)
-  that sets `CONDA_SUBDIR` and `CONDA_OVERRIDE_*` defaults so solves
-  for linux-64 from macOS (and vice versa) work correctly.
+  using `context._cache_` for thread-safe platform configuration
+  with conservative defaults (glibc 2.17, linux 5.15, osx 11.0).
 - Thread-safe solver invocation via `platform_lock` to prevent
   concurrent requests from racing on process-global state.
+- In-memory repodata index cache with `threading.Lock`-guarded
+  check-then-build for thundering herd protection, and explicit
+  `clear_index_cache()` invalidation.
 - HTTP API (`app.py`) built on Starlette with `/solve`,
-  `/solve/environment-yml`, and `/health` endpoints.
+  `/solve/environment-yml`, `/health`, and `/cache/clear` endpoints.
+- `anyio.CapacityLimiter` to cap concurrent solver threads and
+  `abandon_on_cancel=True` for client disconnect handling.
 - Request body size limit (1 MB), input type validation (both JSON
   and YAML endpoints), Content-Length header validation, and
   sanitized error responses (no internal stack traces leaked).
@@ -55,7 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offloaded from the event loop with `anyio.to_thread.run_sync`.
 - CLI with resolve as the default action and `--serve` flag for the
   HTTP server. Uses conda's environment specifier plugins for input
-  and exporter plugins for output (`environment-json` default).
+  and exporter plugins for output.
+- Custom `resolve-json` environment exporter providing full package
+  metadata (sha256, md5, urls, sizes, dependencies) as the default
+  CLI output format.
 - Conda subcommand plugin (`conda resolve`) with lazy imports
   to keep plugin load under 1 ms.
 - Lazy uvicorn import in `cmd_serve()` to reduce CLI startup
@@ -65,12 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CONDA_NO_LOCK=true`, `CONDA_UNSATISFIABLE_HINTS=false`,
   `CONDA_NUMBER_CHANNEL_NOTICES=0`, `CONDA_AGGRESSIVE_UPDATE_PACKAGES=""`,
   `CONDA_LOCAL_REPODATA_TTL=300`, `CONDA_JSON=true`.
-- Comprehensive test suite with pytest, pytest-benchmark,
-  and httpx for async API testing.
+- Comprehensive test suite with pytest, pytest-benchmark, pytest-cov,
+  and httpx for async API testing. 99% code coverage with a 95%
+  `fail_under` threshold enforced on every run.
 - Hyperfine benchmark fixtures (`benchmarks/`) for end-to-end CLI
   performance tracking.
 - GitHub Actions CI workflow with lint, test, and benchmark jobs.
 - Dependabot configuration for GitHub Actions version updates.
 - BSD 3-Clause license.
-
-[0.1.0]: https://github.com/jezdez/conda-resolve/commits/main
