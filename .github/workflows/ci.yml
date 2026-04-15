@@ -53,4 +53,4 @@ jobs:
           path: ~/.cache/rattler/cache
           key: repodata-${{ runner.os }}-${{ hashFiles('pixi.lock') }}
           restore-keys: repodata-${{ runner.os }}-
-      - run: pixi run -e test pytest tests/test_benchmarks.py --benchmark-enable -m "not crossplatform"
+      - run: pixi run -e test pytest tests/test_benchmarks.py --benchmark-enable --no-cov -m "not crossplatform"
