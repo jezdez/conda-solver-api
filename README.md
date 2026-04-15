@@ -138,6 +138,48 @@ curl -X POST 'http://localhost:8000/solve/environment-yml?platform=linux-64' \
 
 Returns `{"status": "ok"}`.
 
+## Docker
+
+Pre-built images are published to GitHub Container Registry on every
+release, for both `linux/amd64` and `linux/arm64`:
+
+```bash
+docker run -p 8000:8000 ghcr.io/jezdez/conda-resolve:latest
+```
+
+Available tags:
+
+| Tag | Example | Description |
+|---|---|---|
+| `latest` | `ghcr.io/jezdez/conda-resolve:latest` | Most recent release |
+| `<version>` | `ghcr.io/jezdez/conda-resolve:0.1.0` | Specific release |
+| `<major>.<minor>` | `ghcr.io/jezdez/conda-resolve:0.1` | Latest patch for a minor |
+| `<major>` | `ghcr.io/jezdez/conda-resolve:0` | Latest minor for a major |
+| `<sha>` | `ghcr.io/jezdez/conda-resolve:a1b2c3d` | Specific commit |
+
+To build locally:
+
+```bash
+docker build -t conda-resolve .
+docker run -p 8000:8000 conda-resolve
+```
+
+The image uses a multi-stage build: dependencies are installed with
+pixi in the build stage, and only the production environment is copied
+into a minimal `debian:bookworm-slim` runtime image. The server runs
+as a non-root user.
+
+The first startup takes ~20-30s while the repodata cache warms up.
+Subsequent solves use the in-memory cache and return in milliseconds.
+
+Multi-platform solve example:
+
+```bash
+curl -X POST http://localhost:8000/solve \
+  -H 'Content-Type: application/json' \
+  -d '{"dependencies": ["python=3.13"], "platforms": ["linux-64", "osx-arm64"]}'
+```
+
 ## Development
 
 ```bash
