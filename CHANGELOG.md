@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-platform virtual package injection (`configure_platform()`)
   that sets `CONDA_SUBDIR` and `CONDA_OVERRIDE_*` defaults so solves
   for linux-64 from macOS (and vice versa) work correctly.
-- Thread-safe solver invocation via `_solver_lock` to prevent
+- Thread-safe solver invocation via `platform_lock` to prevent
   concurrent requests from racing on process-global state.
 - HTTP API (`app.py`) built on Starlette with `/solve`,
   `/solve/environment-yml`, and `/health` endpoints.

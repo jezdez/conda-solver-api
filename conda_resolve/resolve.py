@@ -6,10 +6,12 @@ against conda channels and returns fully-pinned package metadata
 installing anything.
 
 Performance notes:
-    - The ``index_cache`` stores pre-built ``RattlerIndexHelper``
-      objects keyed by ``(channels, platform)``.  Building this index
-      (~700 ms) is the dominant cost of a solve; caching it reduces
-      repeat solves to just the SAT time (~20-100 ms).
+    - ``build_index()`` caches ``RattlerIndexHelper`` objects keyed by
+      ``(channels, platform)``.  Building an index (~700 ms) is the
+      dominant cost of a solve; the cache reduces repeat solves to just
+      the SAT time (~20-100 ms).  ``index_lock`` makes check-then-build
+      atomic, preventing thundering-herd on cold or cleared caches.
+      Call ``clear_index_cache()`` to invalidate all entries.
     - Multi-platform solves run in a persistent ``ProcessPoolExecutor``
       to bypass the GIL. Workers retain their own index caches across
       requests.
@@ -22,9 +24,9 @@ Performance notes:
       which performs a recursive deep-copy of all nested structures.
 
 Security notes:
-    - ``run_solver`` is protected by ``solver_lock`` so that
+    - ``run_solver`` is protected by ``platform_lock`` so that
       concurrent threads (from ``anyio.to_thread``) cannot race on the
-      process-global ``os.environ`` and ``context`` state.
+      conda ``context`` singleton state.
     - Solver errors are caught and returned as error strings in the
       ``SolveResult`` rather than propagated as exceptions, preventing
       internal stack traces from leaking to callers.
@@ -34,7 +36,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -48,57 +49,53 @@ from conda.models.records import PackageRecord
 
 log = logging.getLogger(__name__)
 
-# Default virtual package versions for cross-platform solving.
-# When solving for linux-64 from macOS (or vice versa), conda needs
-# virtual packages like __glibc and __linux to be present. These
-# defaults represent a recent, widely-compatible Linux system.
-VIRTUAL_PACKAGE_DEFAULTS: dict[str, dict[str, str]] = {
-    "linux": {
-        "CONDA_OVERRIDE_GLIBC": "2.35",
-        "CONDA_OVERRIDE_LINUX": "6.1",
-    },
-    "osx": {
-        "CONDA_OVERRIDE_OSX": "14.0",
-    },
+# Virtual package overrides for cross-platform solving.
+# Keyed by platform prefix → {package_name: version}.
+# These are set on context.override_virtual_packages so the
+# virtual_packages plugins produce the right __glibc/__linux/__osx
+# records for the target platform instead of the host.
+#
+# glibc 2.17 matches conda-forge's compilation baseline — every
+# conda-forge package is built to work with glibc ≥ 2.17.
+VIRTUAL_PACKAGES: dict[str, dict[str, str]] = {
+    "linux": {"glibc": "2.17", "linux": "5.15"},
+    "osx": {"osx": "11.0"},
 }
 
-INDEX_TTL_SECONDS = 300
-
 current_platform: str | None = None
-solver_lock = threading.Lock()
+platform_lock = threading.Lock()
 context_configured = False
-index_cache: dict[tuple[tuple[str, ...], str], tuple[object, float]] = {}
+
+index_lock = threading.Lock()
+index_cache: dict[tuple[tuple[str, ...], str], object] = {}
 
 
 def configure_platform(platform: str):
-    """Set CONDA_SUBDIR and virtual package overrides for the target platform.
+    """Point conda's context at *platform* for cross-platform solving.
 
-    This must be called before creating the solver so that conda
-    generates the correct virtual packages (``__glibc``, ``__linux``,
-    ``__osx``, etc.) for the target platform rather than the host.
+    Sets ``context._subdir`` and ``context.override_virtual_packages``
+    directly via the descriptor cache, avoiding ``os.environ`` mutation.
+    This eliminates a class of thread-safety issues: env-var writes are
+    process-global, but the cache is a plain dict on the singleton.
 
-    Callers must hold ``solver_lock`` when calling this function,
-    since it mutates process-global state (``os.environ``, conda
-    ``context``).
+    Callers must hold ``platform_lock`` when calling this function,
+    since the context singleton is shared across threads.
 
-    Skips re-initialization when the platform has not changed (common
-    in server workloads that repeatedly solve for the same target).
-    Only sets overrides if not already present in the environment,
-    allowing callers to provide their own values.
+    Skips re-initialization when the platform has not changed.
     """
     global current_platform
     if current_platform == platform:
         return
 
-    os.environ["CONDA_SUBDIR"] = platform
+    context._cache_["_subdir"] = platform
 
-    for prefix, overrides in VIRTUAL_PACKAGE_DEFAULTS.items():
+    overrides: dict[str, str] = {}
+    for prefix, pkgs in VIRTUAL_PACKAGES.items():
         if platform.startswith(prefix):
-            for key, default in overrides.items():
-                os.environ.setdefault(key, default)
+            overrides = pkgs
             break
+    context._cache_["_override_virtual_packages"] = overrides
 
-    context.__init__()
     current_platform = platform
 
 
@@ -193,47 +190,47 @@ class SolveResult:
 def configure_context():
     """Set conda context options for fast, quiet solves.
 
-    ``context.json = True`` switches conda to its JSON output mode,
-    which uses a no-op spinner and suppresses progress messages that
-    would otherwise pollute stdout.
-
-    Also expected via environment: ``CONDA_JSON=true`` (set via pixi
-    activation) so child processes inherit the setting.
+    Sets ``context.json`` (no-op spinner, no progress noise) and
+    ensures the rattler solver backend is selected.  Both are set
+    directly on the context singleton rather than via env vars.
     """
     global context_configured
     if context_configured:
         return
     context.json = True
+    context._cache_["solver"] = "rattler"
     context_configured = True
 
 
-def get_or_build_index(
+def build_index(
     channels: tuple[str, ...],
     platform: str,
 ) -> object:
-    """Return a cached ``RattlerIndexHelper``, rebuilding if stale.
+    """Return a cached ``RattlerIndexHelper``, building if absent.
 
-    The index is keyed by ``(channels, platform)`` and cached for
-    ``INDEX_TTL_SECONDS``.  Caller must hold ``solver_lock``.
+    ``index_lock`` makes the check-then-build atomic, so only one
+    thread ever builds a given index — no thundering herd.
     """
     from conda_rattler_solver.index import RattlerIndexHelper
 
     key = (channels, platform)
-    cached = index_cache.get(key)
-    now = time.monotonic()
+    with index_lock:
+        cached = index_cache.get(key)
+        if cached is not None:
+            return cached
+        log.debug("Building index for %s/%s", channels, platform)
+        index = RattlerIndexHelper(
+            channels=list(channels),
+            subdirs=(platform, "noarch"),
+        )
+        index_cache[key] = index
+        return index
 
-    if cached is not None:
-        index, built_at = cached
-        if now - built_at < INDEX_TTL_SECONDS:
-            return index
-        log.debug("Index expired for %s/%s, rebuilding", channels, platform)
 
-    index = RattlerIndexHelper(
-        channels=list(channels),
-        subdirs=(platform, "noarch"),
-    )
-    index_cache[key] = (index, now)
-    return index
+def clear_index_cache():
+    """Drop all cached indexes."""
+    with index_lock:
+        index_cache.clear()
 
 
 def run_solver(
@@ -243,9 +240,10 @@ def run_solver(
 ) -> list[PackageRecord]:
     """Run the conda solver and return raw ``PackageRecord`` objects.
 
-    Holds ``solver_lock`` while configuring platform/context and
-    running the solver to prevent concurrent threads from clobbering
-    the process-global ``os.environ`` and conda ``context``.
+    Holds ``platform_lock`` while configuring platform/context and
+    running the solver, because the conda ``context`` singleton is
+    shared across threads and the solver reads from it during
+    construction and solving.
 
     Uses a cached ``RattlerIndexHelper`` so that repeated solves for
     the same channels/platform skip the ~700 ms index-build step.
@@ -255,7 +253,7 @@ def run_solver(
     """
     from conda_rattler_solver.state import SolverInputState, SolverOutputState
 
-    with solver_lock:
+    with platform_lock:
         configure_platform(platform)
         configure_context()
 
@@ -265,7 +263,7 @@ def run_solver(
         if solver_backend is None:
             raise RuntimeError("No solver backend found")
 
-        index = get_or_build_index(channels, platform)
+        index = build_index(channels, platform)
 
         solver = solver_backend(
             prefix="/env/does/not/exist",
@@ -461,11 +459,11 @@ def warmup_indexes(channels: list[str], platforms: list[str]):
     first real solve request hits the cache and only pays SAT time.
     """
     ch = tuple(channels)
-    with solver_lock:
+    with platform_lock:
         for platform in platforms:
             configure_platform(platform)
             configure_context()
-            get_or_build_index(ch, platform)
+            build_index(ch, platform)
 
 
 def warmup(channels: list[str], platforms: list[str]):
