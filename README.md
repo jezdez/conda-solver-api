@@ -193,13 +193,13 @@ to optimize for a solve-only workload:
 When solving for a foreign platform (e.g. `linux-64` from macOS),
 conda needs virtual packages (`__glibc`, `__linux`, `__osx`) to be
 present for the target platform. The solver automatically injects
-reasonable defaults via `CONDA_OVERRIDE_*` environment variables:
+conservative defaults via `context.override_virtual_packages`:
 
-- **linux**: `__glibc=2.35`, `__linux=6.1`
-- **osx**: `__osx=14.0`
+- **linux**: `__glibc=2.17` (conda-forge baseline), `__linux=5.15`
+- **osx**: `__osx=11.0` (Big Sur, conda-forge arm64 baseline)
 
-Override these by setting the corresponding environment variables
-before running a solve (e.g. `CONDA_OVERRIDE_GLIBC=2.17`).
+Override these by setting `CONDA_OVERRIDE_*` environment variables
+or via `.condarc` `override_virtual_packages`.
 
 ## Benchmarks
 
@@ -228,8 +228,8 @@ With a warm index cache, solves are dominated by SAT time only:
 
 | Operation | Time |
 |---|---|
-| Single-platform solve (`zlib`) | ~20 ms |
-| Single-platform solve (`python=3.12, numpy`) | ~100 ms |
+| Single-platform solve (`zlib`) | ~17 ms |
+| Single-platform solve (`python=3.12, numpy`) | ~106 ms |
 | `ResolvedPackage.from_record` (single) | 2.5 µs |
 | `ResolvedPackage.to_dict` (single) | 293 ns |
 | `SolveResult.to_dict` (100 packages) | 23 µs |
