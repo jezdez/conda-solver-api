@@ -1,0 +1,84 @@
+[build-system]
+requires = ["hatchling>=1.12.2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "conda-solver-api"
+version = "0.1.0"
+description = "Resolve conda environment.yml files to fully pinned package lists with SHA256 hashes"
+license = "BSD-3-Clause"
+requires-python = ">=3.13"
+dependencies = [
+    # conda is only available via conda, not PyPI:
+    # "conda >=25.3",
+    "starlette >=0.46",
+    "pyyaml >=6.0",
+    "uvicorn[standard] >=0.34",
+]
+
+[project.scripts]
+conda-solver-api = "conda_solver_api.cli:main"
+
+[project.entry-points.conda]
+"conda-solver-api" = "conda_solver_api.plugin"
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "FA",
+    "I",
+    "ISC",
+    "T10",
+    "UP",
+    "W",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -v --benchmark-disable"
+
+[tool.pixi.workspace]
+channels = ["conda-canary/label/dev", "conda-forge"]
+platforms = ["linux-64", "osx-64", "osx-arm64"]
+
+[tool.pixi.dependencies]
+python = ">=3.13,<3.14"
+conda = ">=25.3"
+conda-rattler-solver = ">=0.0.6,<0.0.7"
+
+[tool.pixi.pypi-dependencies]
+conda-solver-api = { path = ".", editable = true }
+
+[tool.pixi.feature.dev.dependencies]
+ruff = ">=0.9"
+
+[tool.pixi.feature.test.dependencies]
+pytest = ">=8.0"
+pytest-benchmark = ">=5.0"
+httpx = ">=0.28"
+
+[tool.pixi.environments]
+dev = { features = ["dev"], solve-group = "default" }
+test = { features = ["test"], solve-group = "default" }
+
+[tool.pixi.activation.env]
+CONDA_REPODATA_THREADS = "4"
+CONDA_CHANNEL_PRIORITY = "strict"
+CONDA_NO_LOCK = "true"
+CONDA_UNSATISFIABLE_HINTS = "false"
+CONDA_NUMBER_CHANNEL_NOTICES = "0"
+CONDA_AGGRESSIVE_UPDATE_PACKAGES = ""
+CONDA_LOCAL_REPODATA_TTL = "300"
+CONDA_JSON = "true"
+
+[tool.pixi.tasks]
+lint = { cmd = "ruff check conda_solver_api tests", description = "Check code style" }
+format = { cmd = "ruff format conda_solver_api tests", description = "Auto-format code" }
+test = { cmd = "pytest", description = "Run tests" }
+bench = { cmd = "pytest tests/test_benchmarks.py --benchmark-enable", description = "Run benchmarks" }
+serve = { cmd = "uvicorn conda_solver_api.app:app --reload", description = "Run dev server" }
+solve = { cmd = "conda-solver-api solve", description = "Run a solve" }
