@@ -8,13 +8,7 @@ version = "0.1.0"
 description = "Resolve conda environment.yml files to fully pinned package lists with SHA256 hashes"
 license = "BSD-3-Clause"
 requires-python = ">=3.13"
-dependencies = [
-    # conda is only available via conda, not PyPI:
-    # "conda >=25.3",
-    "starlette >=0.46",
-    "pyyaml >=6.0",
-    "uvicorn[standard] >=0.34",
-]
+dependencies = []
 
 [project.scripts]
 conda-resolve = "conda_resolve.cli:main"
@@ -56,6 +50,9 @@ platforms = ["linux-64", "osx-64", "osx-arm64"]
 python = ">=3.13,<3.14"
 conda = ">=25.3"
 conda-rattler-solver = ">=0.0.6,<0.0.7"
+starlette = ">=0.46"
+pyyaml = ">=6.0"
+uvicorn = ">=0.34"
 
 [tool.pixi.pypi-dependencies]
 conda-resolve = { path = ".", editable = true }
@@ -68,6 +65,7 @@ pytest = ">=8.0"
 pytest-benchmark = ">=5.0"
 pytest-cov = ">=6.0"
 httpx = ">=0.28"
+anyio = ">=4.0"
 
 [tool.pixi.environments]
 dev = { features = ["dev"], solve-group = "default" }
