@@ -17,11 +17,11 @@ from conda_resolve.resolve import (
     configure_platform,
     get_process_pool,
     index_cache,
+    platform_lock,
     run_solver,
     solve,
     solve_environments,
     solve_one_platform,
-    platform_lock,
 )
 
 
