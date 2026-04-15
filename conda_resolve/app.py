@@ -25,12 +25,13 @@ import logging
 from contextlib import asynccontextmanager
 
 import anyio
+import yaml
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .resolve import SolveRequest, solve, warmup
+from .resolve import solve, warmup
 
 log = logging.getLogger(__name__)
 
@@ -52,19 +53,25 @@ async def _read_body(
     spoofed headers).
     """
     content_length = request.headers.get("content-length")
-    if content_length is not None and int(content_length) > limit:
-        raise ValueError("Request body too large")
+    if content_length is not None:
+        try:
+            if int(content_length) > limit:
+                raise ValueError("Request body too large")
+        except (ValueError, OverflowError):
+            raise ValueError("Invalid Content-Length header")
     body = await request.body()
     if len(body) > limit:
         raise ValueError("Request body too large")
     return body
 
 
-def _validate_solve_body(body: dict) -> SolveRequest:
-    """Build a SolveRequest from a JSON dict, validating types.
+def _validate_solve_body(
+    body: dict,
+) -> tuple[list[str], list[str], list[str]]:
+    """Extract and validate channels/dependencies/platforms from JSON.
 
-    Rejects non-string values in channels/dependencies/platforms
-    to prevent type confusion errors deep in the solver.
+    Rejects non-string values to prevent type confusion errors
+    deep in the solver.  Returns ``(channels, dependencies, platforms)``.
     """
     channels = body.get("channels", ["defaults"])
     dependencies = body.get("dependencies", [])
@@ -83,30 +90,65 @@ def _validate_solve_body(body: dict) -> SolveRequest:
     ):
         raise ValueError("'platforms' must be a list of strings")
 
-    return SolveRequest(
-        channels=channels,
-        dependencies=dependencies,
-        platforms=platforms,
-    )
+    return channels, dependencies, platforms
 
 
-def _solve_and_serialize(req: SolveRequest) -> list[dict]:
+def _parse_environment_yml(
+    source: str | bytes,
+    *,
+    platforms: list[str] | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Parse an environment.yml into ``(channels, dependencies, platforms)``.
+
+    Only conda dependencies (plain strings) are extracted; pip
+    sub-dicts are silently skipped.  Uses ``yaml.safe_load`` to
+    prevent arbitrary code execution from untrusted input.
+    """
+    try:
+        data = yaml.safe_load(source)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid YAML: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Expected a YAML mapping")
+
+    deps = data.get("dependencies", [])
+    conda_deps = [d for d in deps if isinstance(d, str)]
+    raw_channels = data.get("channels", ["defaults"])
+    if not isinstance(raw_channels, list) or not all(
+        isinstance(c, str) for c in raw_channels
+    ):
+        raise ValueError("'channels' must be a list of strings")
+
+    return raw_channels, conda_deps, platforms or []
+
+
+def _solve_and_serialize(
+    channels: list[str],
+    dependencies: list[str],
+    platforms: list[str] | None,
+) -> list[dict]:
     """Run solve and serialize results in one shot.
 
     Both the solve and the to_dict() serialization are CPU work that
     should stay off the event loop.
     """
-    results = solve(req)
+    results = solve(channels, dependencies, platforms)
     return [r.to_dict() for r in results]
 
 
-async def _run_solve(req: SolveRequest) -> list[dict]:
+async def _run_solve(
+    channels: list[str],
+    dependencies: list[str],
+    platforms: list[str] | None,
+) -> list[dict]:
     """Run solve off the event loop so other requests aren't blocked.
 
     Without this, a multi-second solve would starve all concurrent
     connections including health checks.
     """
-    return await anyio.to_thread.run_sync(lambda: _solve_and_serialize(req))
+    return await anyio.to_thread.run_sync(
+        lambda: _solve_and_serialize(channels, dependencies, platforms)
+    )
 
 
 async def solve_specs(request: Request) -> JSONResponse:
@@ -124,12 +166,12 @@ async def solve_specs(request: Request) -> JSONResponse:
         )
 
     try:
-        req = _validate_solve_body(body)
+        channels, dependencies, platforms = _validate_solve_body(body)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
     try:
-        output = await _run_solve(req)
+        output = await _run_solve(channels, dependencies, platforms or None)
     except Exception:
         log.exception("Solve failed")
         return JSONResponse(
@@ -145,15 +187,17 @@ async def solve_environment_yml(request: Request) -> JSONResponse:
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=413)
 
-    platforms = request.query_params.getlist("platform")
+    query_platforms = request.query_params.getlist("platform")
     try:
-        req = SolveRequest.from_environment_yml(
-            body, platforms=platforms or None
+        channels, dependencies, platforms = _parse_environment_yml(
+            body, platforms=query_platforms or None
         )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     try:
-        output = await _run_solve(req)
+        output = await _run_solve(
+            channels, dependencies, platforms or None
+        )
     except Exception:
         log.exception("Solve failed")
         return JSONResponse(

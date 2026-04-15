@@ -1,4 +1,4 @@
-"""Conda plugin registration for conda-solver-api.
+"""Conda plugin registration for conda-resolve.
 
 This module is imported on every ``conda`` invocation via the entry
 point system.  Only ``hookimpl`` and type imports are at module level;
@@ -19,11 +19,11 @@ if TYPE_CHECKING:
 
 @hookimpl
 def conda_subcommands() -> Iterable[CondaSubcommand]:
-    """Register ``conda solver-api`` as a conda subcommand."""
+    """Register ``conda resolve`` as a conda subcommand."""
     from .cli import configure_parser, execute
 
     yield CondaSubcommand(
-        name="solver-api",
+        name="resolve",
         summary=(
             "Dry-run solver: resolve specs or environment.yml"
             " to pinned packages, or serve as an HTTP API."

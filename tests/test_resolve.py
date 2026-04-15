@@ -1,47 +1,23 @@
-"""Tests for conda_solver_api.resolve."""
+"""Tests for conda_resolve.resolve."""
 from __future__ import annotations
 
 import threading
 from concurrent.futures import ProcessPoolExecutor
 
 import pytest
+from conda.models.environment import Environment
 from conda.models.records import PackageRecord
 
-from conda_solver_api.resolve import (
+from conda_resolve.resolve import (
     ResolvedPackage,
-    SolveRequest,
     SolveResult,
+    _run_solver,
     configure_context,
     get_process_pool,
     solve,
+    solve_environments,
     solve_one_platform,
 )
-
-
-def test_solve_request_defaults():
-    req = SolveRequest()
-    assert req.channels == ["defaults"]
-    assert req.dependencies == []
-    assert req.platforms == []
-
-
-@pytest.mark.parametrize(
-    "channels, dependencies, platforms",
-    [
-        (["conda-forge"], ["numpy"], ["linux-64"]),
-        (["defaults", "conda-forge"], ["python=3.12", "scipy"], []),
-        (["bioconda"], [], ["osx-arm64", "linux-64"]),
-    ],
-)
-def test_solve_request_custom_values(channels, dependencies, platforms):
-    req = SolveRequest(
-        channels=channels,
-        dependencies=dependencies,
-        platforms=platforms,
-    )
-    assert req.channels == channels
-    assert req.dependencies == dependencies
-    assert req.platforms == platforms
 
 
 def test_resolved_package_from_record(sample_record):
@@ -175,6 +151,29 @@ def test_get_process_pool_threadsafe():
     assert all(p is pools[0] for p in pools)
 
 
+def test_run_solver_returns_records():
+    records = _run_solver(
+        channels=("conda-forge",),
+        dependencies=["zlib"],
+        platform="linux-64",
+    )
+    assert all(isinstance(r, PackageRecord) for r in records)
+    names = [r.name for r in records]
+    assert "zlib" in names
+    assert names == sorted(names)
+
+
+def test_run_solver_unsatisfiable():
+    from conda.exceptions import PackagesNotFoundError, UnsatisfiableError
+
+    with pytest.raises((UnsatisfiableError, PackagesNotFoundError)):
+        _run_solver(
+            channels=("conda-forge",),
+            dependencies=["__nonexistent_package_xyz__"],
+            platform="linux-64",
+        )
+
+
 def test_solve_one_platform_returns_result():
     result = solve_one_platform(
         channels=("conda-forge",),
@@ -220,15 +219,17 @@ def test_solve_one_platform_unsatisfiable():
     assert result.packages == []
 
 
-def test_solve_single_platform(minimal_solve_request):
-    results = solve(minimal_solve_request)
+def test_solve_single_platform():
+    results = solve(["conda-forge"], ["zlib"], ["linux-64"])
     assert len(results) == 1
     assert results[0].platform == "linux-64"
     assert results[0].error is None
 
 
-def test_solve_multi_platform(multi_platform_solve_request):
-    results = solve(multi_platform_solve_request)
+def test_solve_multi_platform():
+    results = solve(
+        ["conda-forge"], ["zlib"], ["linux-64", "osx-arm64"]
+    )
     assert len(results) == 2
     platforms = [r.platform for r in results]
     assert platforms == ["linux-64", "osx-arm64"]
@@ -240,13 +241,37 @@ def test_solve_multi_platform(multi_platform_solve_request):
 def test_solve_defaults_to_current_platform():
     from conda.base.context import context
 
-    req = SolveRequest(
-        channels=["conda-forge"],
-        dependencies=["zlib"],
-    )
-    results = solve(req)
+    results = solve(["conda-forge"], ["zlib"])
     assert len(results) == 1
     assert results[0].platform == context.subdir
+
+
+def test_solve_environments_single():
+    envs = solve_environments(
+        ["conda-forge"], ["zlib"], ["linux-64"]
+    )
+    assert len(envs) == 1
+    assert isinstance(envs[0], Environment)
+    assert envs[0].platform == "linux-64"
+    names = [r.name for r in envs[0].explicit_packages]
+    assert "zlib" in names
+
+
+def test_solve_environments_multi():
+    envs = solve_environments(
+        ["conda-forge"], ["zlib"], ["linux-64", "osx-arm64"]
+    )
+    assert len(envs) == 2
+    platforms = [e.platform for e in envs]
+    assert platforms == ["linux-64", "osx-arm64"]
+
+
+def test_solve_environments_defaults_to_current():
+    from conda.base.context import context
+
+    envs = solve_environments(["conda-forge"], ["zlib"])
+    assert len(envs) == 1
+    assert envs[0].platform == context.subdir
 
 
 @pytest.mark.parametrize(
@@ -257,12 +282,7 @@ def test_solve_defaults_to_current_platform():
     ],
 )
 def test_solve_varying_deps(deps):
-    req = SolveRequest(
-        channels=["conda-forge"],
-        dependencies=deps,
-        platforms=["linux-64"],
-    )
-    results = solve(req)
+    results = solve(["conda-forge"], deps, ["linux-64"])
     assert results[0].error is None
     resolved_names = {p.name for p in results[0].packages}
     for dep in deps:

@@ -1,11 +1,19 @@
-"""Benchmarks for conda_solver_api hot paths using pytest-benchmark."""
+"""Benchmarks for conda_resolve hot paths using pytest-benchmark.
+
+Compares the server path (ResolvedPackage/SolveResult) against the
+CLI path (PackageRecord/Environment) to verify the server types
+provide measurable serialization and memory benefits.
+"""
 from __future__ import annotations
 
-import pytest
+import json
+import sys
 
-from conda_solver_api.resolve import (
+import pytest
+from conda.models.environment import Environment
+
+from conda_resolve.resolve import (
     ResolvedPackage,
-    SolveRequest,
     SolveResult,
     solve,
     solve_one_platform,
@@ -59,18 +67,70 @@ def test_bench_solve_one_platform_zlib(benchmark):
     ],
 )
 def test_bench_solve_varying_deps(benchmark, deps):
-    req = SolveRequest(
-        channels=["conda-forge"],
-        dependencies=deps,
-        platforms=["linux-64"],
-    )
-    benchmark(solve, req)
+    benchmark(solve, ["conda-forge"], deps, ["linux-64"])
 
 
 def test_bench_solve_multi_platform(benchmark):
-    req = SolveRequest(
-        channels=["conda-forge"],
-        dependencies=["zlib"],
-        platforms=["linux-64", "osx-arm64"],
+    benchmark(
+        solve, ["conda-forge"], ["zlib"], ["linux-64", "osx-arm64"]
     )
-    benchmark(solve, req)
+
+
+# -------------------------------------------------------------------
+# Server vs CLI path comparison benchmarks
+# -------------------------------------------------------------------
+
+
+def test_bench_server_path_serialize(benchmark, many_records):
+    """Server path: PackageRecord -> ResolvedPackage -> to_dict -> JSON."""
+    def _server_path():
+        packages = [
+            ResolvedPackage.from_record(r) for r in many_records
+        ]
+        result = SolveResult(
+            platform="linux-64", packages=packages
+        )
+        return json.dumps(result.to_dict())
+
+    benchmark(_server_path)
+
+
+def test_bench_cli_path_construct(benchmark, many_records):
+    """CLI path: PackageRecord stays as-is in Environment."""
+    def _cli_path():
+        return Environment(
+            platform="linux-64",
+            explicit_packages=list(many_records),
+        )
+
+    benchmark(_cli_path)
+
+
+def test_bench_memory_shallow_sizes(many_records):
+    """Report shallow sizes (sys.getsizeof) for both paths.
+
+    Note: sys.getsizeof is unreliable for auxlib Entity objects —
+    it reports only the container size, not internal storage.
+    This test is informational only.
+    """
+    packages = [
+        ResolvedPackage.from_record(r) for r in many_records
+    ]
+    result = SolveResult(platform="linux-64", packages=packages)
+
+    env = Environment(
+        platform="linux-64", explicit_packages=list(many_records)
+    )
+
+    server_size = sys.getsizeof(result) + sum(
+        sys.getsizeof(p) for p in packages
+    )
+    cli_size = sys.getsizeof(env) + sum(
+        sys.getsizeof(r) for r in many_records
+    )
+
+    print(f"\n  Server (SolveResult+ResolvedPackage): {server_size:,} bytes")
+    print(f"  CLI (Environment+PackageRecord):      {cli_size:,} bytes")
+    print(
+        "  Note: sys.getsizeof underreports auxlib Entity sizes"
+    )

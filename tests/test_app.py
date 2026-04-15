@@ -1,4 +1,4 @@
-"""Tests for conda_solver_api.app (Starlette endpoints)."""
+"""Tests for conda_resolve.app (Starlette endpoints)."""
 from __future__ import annotations
 
 import pytest
@@ -6,7 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
 
-from conda_solver_api.app import health, solve_environment_yml, solve_specs
+from conda_resolve.app import health, solve_environment_yml, solve_specs
 
 
 @pytest.fixture()
@@ -264,3 +264,35 @@ async def test_solve_specs_error_does_not_leak_internals(client):
     data = resp.json()
     assert data[0]["error"] is not None
     assert "/Users/" not in data[0]["error"]
+
+
+@pytest.mark.anyio
+async def test_solve_specs_invalid_content_length(client):
+    resp = await client.post(
+        "/solve",
+        content=b'{"dependencies": ["zlib"]}',
+        headers={
+            "content-type": "application/json",
+            "content-length": "not-a-number",
+        },
+    )
+    assert resp.status_code == 413
+    assert "Content-Length" in resp.json()["error"]
+
+
+@pytest.mark.anyio
+async def test_solve_environment_yml_invalid_channels(client):
+    yml = b"""\
+name: test
+channels:
+  - 123
+dependencies:
+  - zlib
+"""
+    resp = await client.post(
+        "/solve/environment-yml?platform=linux-64",
+        content=yml,
+        headers={"content-type": "application/x-yaml"},
+    )
+    assert resp.status_code == 400
+    assert "channels" in resp.json()["error"]

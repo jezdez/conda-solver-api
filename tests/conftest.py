@@ -1,11 +1,11 @@
-"""Shared fixtures for conda-solver-api tests."""
+"""Shared fixtures for conda-resolve tests."""
 from __future__ import annotations
 
 import pytest
 from conda.models.channel import Channel
 from conda.models.records import PackageRecord
 
-from conda_solver_api.resolve import ResolvedPackage, SolveRequest, SolveResult
+from conda_resolve.resolve import ResolvedPackage, SolveResult
 
 
 @pytest.fixture()
@@ -76,24 +76,6 @@ def sample_solve_result(sample_resolved_package):
     return SolveResult(
         platform="linux-64",
         packages=[sample_resolved_package],
-    )
-
-
-@pytest.fixture()
-def minimal_solve_request():
-    return SolveRequest(
-        channels=["conda-forge"],
-        dependencies=["zlib"],
-        platforms=["linux-64"],
-    )
-
-
-@pytest.fixture()
-def multi_platform_solve_request():
-    return SolveRequest(
-        channels=["conda-forge"],
-        dependencies=["zlib"],
-        platforms=["linux-64", "osx-arm64"],
     )
 
 
