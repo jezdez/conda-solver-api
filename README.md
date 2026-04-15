@@ -1,11 +1,11 @@
-# conda-solver-api
+# conda-resolve
 
 A fast, dry-run conda solver exposed as both a CLI and an HTTP API.
 Given package specs or an `environment.yml`, it resolves fully pinned
 packages (with SHA256 hashes, URLs, and dependency metadata) for one
 or more platforms — without downloading or installing anything.
 
-It registers as a conda subcommand plugin (`conda solver-api`) and
+It registers as a conda subcommand plugin (`conda resolve`) and
 can also run as a standalone HTTP service for integration into
 CI pipelines, security scanners, or other tooling that needs resolved
 package lists programmatically.
@@ -16,12 +16,12 @@ package lists programmatically.
 - Cross-platform solving (e.g. solve for `linux-64` from macOS) with
   automatic virtual package injection (`__glibc`, `__linux`, `__osx`)
 - Multi-platform solves run in parallel via `ProcessPoolExecutor`
-- Multiple output formats: JSON (default), explicit lockfile, text
+- Multiple output formats: JSON (default), explicit lockfile, YAML
 - Multiple `--file` inputs merged into a single solve
 - Conda-native CLI flags (`--override-channels`, `--solver`, `--offline`, etc.)
 - HTTP API with JSON input/output (Starlette + uvicorn)
 - Repodata cache pre-warming on server startup
-- Conda plugin: `conda solver-api solve` / `conda solver-api serve`
+- Conda plugin: `conda resolve` / `conda resolve --serve`
 - Uses `conda-rattler-solver` for fast SAT solving
 - Tuned for speed: strict channel priority, parallel repodata
   fetching, no lock contention, repodata TTL caching
@@ -48,49 +48,82 @@ Requires conda >= 25.3 and Python >= 3.13.
 ### As a conda subcommand
 
 ```bash
-conda solver-api solve -c conda-forge -p linux-64 python=3.12 numpy
+conda resolve -c conda-forge -p linux-64 python=3.12 numpy
 
-conda solver-api solve -f environment.yml -p linux-64 -p osx-arm64
+conda resolve -f environment.yml -p linux-64 -p osx-arm64
 
-conda solver-api solve -c conda-forge -p linux-64 --explicit --md5 zlib
+conda resolve -c conda-forge -p linux-64 --explicit zlib
 
-conda solver-api serve --port 8000
+conda resolve --serve --port 8000
 ```
 
 ### As a standalone CLI
 
 ```bash
-conda-solver-api solve -c conda-forge -p linux-64 zlib
+conda-resolve -c conda-forge -p linux-64 zlib
 
-conda-solver-api solve -f env1.yml -f env2.yml -p linux-64
+conda-resolve -f env1.yml -f env2.yml -p linux-64
 
-conda-solver-api solve --override-channels -c my-channel -p linux-64 numpy
+conda-resolve --override-channels -c my-channel -p linux-64 numpy
 
-conda-solver-api solve --solver rattler -c conda-forge -p linux-64 zlib
+conda-resolve --solver rattler -c conda-forge -p linux-64 zlib
 
-conda-solver-api serve
+conda-resolve --serve
 ```
 
 ### Output formats
 
-**JSON** (default): full package metadata with SHA256, URLs, dependencies.
+**JSON** (default, `environment-json`): conda environment format with
+fully pinned dependencies.
+
+```bash
+conda-resolve -c conda-forge -p linux-64 zlib
+```
+
+```json
+{
+  "dependencies": [
+    "libgcc-ng=14.2.0=h69a702a_2",
+    "libzlib=1.3.1=hb9d3cd8_2",
+    "zlib=1.3.1=hb9d3cd8_2"
+  ]
+}
+```
 
 **Explicit lockfile** (`--explicit`): one URL per line, compatible with
-`conda create --file`. Add `--md5` to append MD5 hashes.
+`conda create --file`.
 
 ```bash
-conda-solver-api solve -c conda-forge -p linux-64 --explicit --md5 zlib
+conda-resolve -c conda-forge -p linux-64 --explicit zlib
 ```
 
-**Text** (`--no-channels` and/or `--no-builds`): compact text listing.
+**YAML** (`--format yaml`): conda environment.yml format.
 
 ```bash
-conda-solver-api solve -c conda-forge -p linux-64 --no-channels --no-builds zlib
+conda-resolve -c conda-forge -p linux-64 --format yaml zlib
 ```
 
-### Output format
+Other output formats can be provided by conda exporter plugins
+(use `--format <name>`).
 
-JSON array with one entry per platform:
+## HTTP API
+
+Start the server:
+
+```bash
+conda resolve --serve
+# or: uvicorn conda_resolve.app:app
+```
+
+### `POST /solve`
+
+```bash
+curl -X POST http://localhost:8000/solve \
+  -H 'Content-Type: application/json' \
+  -d '{"channels": ["conda-forge"], "dependencies": ["python=3.12", "numpy"], "platforms": ["linux-64"]}'
+```
+
+Returns a JSON array with one entry per platform:
 
 ```json
 [
@@ -104,34 +137,17 @@ JSON array with one entry per platform:
         "build_number": 0,
         "channel": "conda-forge",
         "subdir": "linux-64",
-        "url": "https://conda.anaconda.org/conda-forge/linux-64/numpy-2.2.4-py312h72c5963_0.conda",
+        "url": "https://conda.anaconda.org/...",
         "sha256": "...",
         "md5": "...",
         "size": 8048579,
-        "depends": ["libblas >=3.9.0,<4.0a0", "..."],
+        "depends": ["libblas >=3.9.0,<4.0a0"],
         "constrains": []
       }
     ],
     "error": null
   }
 ]
-```
-
-## HTTP API
-
-Start the server:
-
-```bash
-conda solver-api serve
-# or: uvicorn conda_solver_api.app:app
-```
-
-### `POST /solve`
-
-```bash
-curl -X POST http://localhost:8000/solve \
-  -H 'Content-Type: application/json' \
-  -d '{"channels": ["conda-forge"], "dependencies": ["python=3.12", "numpy"], "platforms": ["linux-64"]}'
 ```
 
 ### `POST /solve/environment-yml`
@@ -166,7 +182,6 @@ to optimize for a solve-only workload:
 | Variable | Value | Purpose |
 |---|---|---|
 | `CONDA_SOLVER` | `rattler` | Use the fast rattler solver backend |
-| `CONDA_REPODATA_THREADS` | `4` | Parallel repodata fetching |
 | `CONDA_CHANNEL_PRIORITY` | `strict` | Skip lower-priority channels early |
 | `CONDA_NO_LOCK` | `true` | Skip filesystem locking (single-writer) |
 | `CONDA_UNSATISFIABLE_HINTS` | `false` | Skip expensive hint generation on failure |
@@ -227,5 +242,5 @@ Run benchmarks:
 
 ```bash
 pixi run bench               # pytest-benchmark
-hyperfine 'pixi run -e test conda-solver-api solve -c conda-forge -p linux-64 python=3.12 numpy'
+hyperfine 'pixi run -e test conda-resolve -c conda-forge -p linux-64 python=3.12 numpy'
 ```
