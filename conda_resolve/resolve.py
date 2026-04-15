@@ -62,6 +62,8 @@ VIRTUAL_PACKAGES: dict[str, dict[str, str]] = {
     "osx": {"osx": "11.0"},
 }
 
+NATIVE_SUBDIR: str = context.subdir
+
 current_platform: str | None = None
 platform_lock = threading.Lock()
 context_configured = False
@@ -380,7 +382,7 @@ def solve(
         solve_one_platform,
         tuple(channels),
         dependencies,
-        platforms or [context.subdir],
+        platforms or [NATIVE_SUBDIR],
         on_error=solve_result_error,
     )
 
@@ -422,7 +424,7 @@ def solve_environments(
         solve_one_environment,
         tuple(channels),
         dependencies,
-        platforms or [context.subdir],
+        platforms or [NATIVE_SUBDIR],
     )
 
 

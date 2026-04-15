@@ -45,7 +45,7 @@ fail_under = 95
 
 [tool.pixi.workspace]
 channels = ["conda-canary/label/dev", "conda-forge"]
-platforms = ["linux-64", "osx-64", "osx-arm64"]
+platforms = ["linux-64", "linux-aarch64", "osx-64", "osx-arm64"]
 
 [tool.pixi.dependencies]
 python = ">=3.13,<3.14"
@@ -68,9 +68,12 @@ pytest-cov = ">=6.0"
 httpx = ">=0.28"
 anyio = ">=4.0"
 
+[tool.pixi.feature.prod.dependencies]
+
 [tool.pixi.environments]
 dev = { features = ["dev"], solve-group = "default" }
 test = { features = ["test"], solve-group = "default" }
+prod = { features = ["prod"], solve-group = "default" }
 
 [tool.pixi.activation.env]
 CONDA_CHANNEL_PRIORITY = "strict"
