@@ -1,10 +1,11 @@
 """Starlette HTTP API for conda environment resolving.
 
-Exposes two solve endpoints and a health check:
+Endpoints:
 
 - ``POST /solve`` — accepts JSON with channels, dependencies, platforms
 - ``POST /solve/environment-yml`` — accepts raw YAML body
 - ``GET /health`` — returns ``{"status": "ok"}``
+- ``POST /cache/clear`` — drops all cached repodata indexes
 
 Security design:
     - All request bodies are capped at 1 MB to prevent memory exhaustion.
@@ -31,7 +32,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .resolve import solve, warmup
+from .resolve import clear_index_cache, index_cache, solve, warmup
+
+solver_limiter: anyio.CapacityLimiter | None = None
 
 log = logging.getLogger(__name__)
 
@@ -147,7 +150,9 @@ async def _run_solve(
     connections including health checks.
     """
     return await anyio.to_thread.run_sync(
-        lambda: _solve_and_serialize(channels, dependencies, platforms)
+        lambda: _solve_and_serialize(channels, dependencies, platforms),
+        limiter=solver_limiter,
+        abandon_on_cancel=True,
     )
 
 
@@ -211,6 +216,13 @@ async def health(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+async def cache_clear(request: Request) -> JSONResponse:
+    """``POST /cache/clear`` — drop all cached repodata indexes."""
+    count = len(index_cache)
+    clear_index_cache()
+    return JSONResponse({"cleared": count})
+
+
 @asynccontextmanager
 async def lifespan(app: Starlette):
     """Pre-warm repodata caches on startup.
@@ -218,13 +230,16 @@ async def lifespan(app: Starlette):
     Runs in a thread to avoid blocking the event loop during the
     potentially slow repodata fetch.
     """
+    global solver_limiter
+    solver_limiter = anyio.CapacityLimiter(4)
     log.info(
         "Pre-warming repodata cache for %s on %s",
         WARMUP_CHANNELS,
         WARMUP_PLATFORMS,
     )
     await anyio.to_thread.run_sync(
-        lambda: warmup(WARMUP_CHANNELS, WARMUP_PLATFORMS)
+        lambda: warmup(WARMUP_CHANNELS, WARMUP_PLATFORMS),
+        abandon_on_cancel=True,
     )
     log.info("Repodata cache warm")
     yield
@@ -239,6 +254,7 @@ app = Starlette(
             methods=["POST"],
         ),
         Route("/health", health, methods=["GET"]),
+        Route("/cache/clear", cache_clear, methods=["POST"]),
     ],
     lifespan=lifespan,
 )
