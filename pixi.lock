@@ -1430,7 +1430,7 @@ packages:
 - pypi: ./
   name: conda-solver-api
   version: 0.1.0
-  sha256: 4bdf3c5b8ce4cf17474858bf55c3256fde847d3909f49308b82d658b5e0fd9a9
+  sha256: 2929c4e124b32365c13c73657b0bf7096b674abb0599a9e371219a1f4f374212
   requires_dist:
   - starlette>=0.46
   - pyyaml>=6.0

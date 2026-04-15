@@ -27,6 +27,7 @@ Security notes:
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -41,6 +42,41 @@ from conda.models.match_spec import MatchSpec
 from conda.models.records import PackageRecord
 
 log = logging.getLogger(__name__)
+
+# Default virtual package versions for cross-platform solving.
+# When solving for linux-64 from macOS (or vice versa), conda needs
+# virtual packages like __glibc and __linux to be present. These
+# defaults represent a recent, widely-compatible Linux system.
+VIRTUAL_PACKAGE_DEFAULTS: dict[str, dict[str, str]] = {
+    "linux": {
+        "CONDA_OVERRIDE_GLIBC": "2.35",
+        "CONDA_OVERRIDE_LINUX": "6.1",
+    },
+    "osx": {
+        "CONDA_OVERRIDE_OSX": "14.0",
+    },
+}
+
+
+def configure_platform(platform: str):
+    """Set CONDA_SUBDIR and virtual package overrides for the target platform.
+
+    This must be called before creating the solver so that conda
+    generates the correct virtual packages (``__glibc``, ``__linux``,
+    ``__osx``, etc.) for the target platform rather than the host.
+
+    Only sets overrides if not already present in the environment,
+    allowing callers to provide their own values.
+    """
+    os.environ["CONDA_SUBDIR"] = platform
+
+    for prefix, overrides in VIRTUAL_PACKAGE_DEFAULTS.items():
+        if platform.startswith(prefix):
+            for key, default in overrides.items():
+                os.environ.setdefault(key, default)
+            break
+
+    context.__init__()
 
 
 @dataclass
@@ -206,11 +242,14 @@ def solve_one_platform(
     All parameters are plain strings so this function can be dispatched
     to a ``ProcessPoolExecutor`` worker without serialization issues.
 
-    Uses ``command="create"`` with a non-existent prefix so the solver
-    treats this as a fresh environment (no existing packages to
-    constrain against).
+    Calls ``configure_platform`` to set CONDA_SUBDIR and inject
+    virtual package overrides (``__glibc``, ``__linux``, ``__osx``)
+    so cross-platform solves succeed. Uses ``command="create"`` with
+    a non-existent prefix so the solver treats this as a fresh
+    environment.
     """
     configure_context()
+    configure_platform(platform)
 
     specs = [MatchSpec(dep) for dep in dependencies]
 
@@ -311,6 +350,8 @@ def _warmup_subdirs(channels: list[str], platforms: list[str]):
     don't pay the network I/O cost.
     """
     configure_context()
+    if platforms:
+        configure_platform(platforms[0])
     # dict.fromkeys preserves insertion order and deduplicates
     subdirs = list(dict.fromkeys(
         subdir

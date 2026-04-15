@@ -1,0 +1,15 @@
+name: large
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - scikit-learn
+  - pytorch
+  - transformers
+  - flask
+  - requests
+  - pillow

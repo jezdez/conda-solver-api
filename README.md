@@ -13,11 +13,13 @@ package lists programmatically.
 ## Features
 
 - Resolve inline specs or `environment.yml` files
-- Cross-platform solving (e.g. solve for `linux-64` from macOS)
+- Cross-platform solving (e.g. solve for `linux-64` from macOS) with
+  automatic virtual package injection (`__glibc`, `__linux`, `__osx`)
 - Multi-platform solves run in parallel via `ProcessPoolExecutor`
 - HTTP API with JSON input/output (Starlette + uvicorn)
 - Repodata cache pre-warming on server startup
 - Conda plugin: `conda solver-api solve` / `conda solver-api serve`
+- Uses `conda-rattler-solver` for fast SAT solving
 - Tuned for speed: strict channel priority, parallel repodata
   fetching, no lock contention, repodata TTL caching
 
@@ -137,6 +139,7 @@ to optimize for a solve-only workload:
 
 | Variable | Value | Purpose |
 |---|---|---|
+| `CONDA_SOLVER` | `rattler` | Use the fast rattler solver backend |
 | `CONDA_REPODATA_THREADS` | `4` | Parallel repodata fetching |
 | `CONDA_CHANNEL_PRIORITY` | `strict` | Skip lower-priority channels early |
 | `CONDA_NO_LOCK` | `true` | Skip filesystem locking (single-writer) |
@@ -150,31 +153,53 @@ The server pre-warms repodata caches on startup (both the parent
 process and `ProcessPoolExecutor` workers) so the first request
 doesn't pay the full repodata fetch cost.
 
+### Cross-platform virtual packages
+
+When solving for a foreign platform (e.g. `linux-64` from macOS),
+conda needs virtual packages (`__glibc`, `__linux`, `__osx`) to be
+present for the target platform. The solver automatically injects
+reasonable defaults via `CONDA_OVERRIDE_*` environment variables:
+
+- **linux**: `__glibc=2.35`, `__linux=6.1`
+- **osx**: `__osx=14.0`
+
+Override these by setting the corresponding environment variables
+before running a solve (e.g. `CONDA_OVERRIDE_GLIBC=2.17`).
+
 ## Benchmarks
 
-Measured with `pytest-benchmark` on macOS ARM64, Python 3.13,
-conda 26.3.2 (canary/dev), conda-rattler-solver, warm repodata cache:
+### End-to-end CLI (hyperfine)
 
-### Serialization (dataclass operations)
+Measured with `hyperfine` on macOS ARM64, Python 3.13,
+conda 26.3.2 (canary/dev), `conda-rattler-solver`, warm repodata
+cache, solving against `conda-forge`:
 
-| Operation | Time | Throughput |
-|---|---|---|
-| `ResolvedPackage.from_record` (single) | 2.5 µs | 406k ops/s |
-| `ResolvedPackage.from_record` (100 batch) | 256 µs | 3.9k batches/s |
-| `ResolvedPackage.to_dict` (single) | 293 ns | 3.4M ops/s |
-| `to_dict` (100-package batch) | 22 µs | 45k batches/s |
-| `SolveResult.to_dict` (100 packages) | 23 µs | 44k ops/s |
+| Scenario | Mean | Min | Max |
+|---|---:|---:|---:|
+| zlib, 1 platform | 1.2 s | 1.2 s | 1.2 s |
+| zlib, 3 platforms | 1.5 s | 1.5 s | 1.6 s |
+| py+scipy+pandas+matplotlib, 1 platform | 1.7 s | 1.7 s | 1.8 s |
+| py+scipy+pandas+matplotlib, 3 platforms | 2.0 s | 2.0 s | 2.1 s |
+| py+torch+transformers+sklearn (11 pkgs), 1 platform | 4.5 s | 4.4 s | 4.5 s |
+| py+torch+transformers+sklearn (11 pkgs), 3 platforms | 5.2 s | 5.1 s | 5.3 s |
 
-### Solver (warm cache, conda-forge)
+Times include Python startup (~50 ms), pixi overhead (~50 ms), and
+conda import (~200 ms). Multi-platform solves run in parallel and
+scale sub-linearly (3 platforms in ~1.2x the time of 1).
+
+### In-process (pytest-benchmark)
 
 | Operation | Time |
 |---|---|
+| `ResolvedPackage.from_record` (single) | 2.5 µs |
+| `ResolvedPackage.to_dict` (single) | 293 ns |
+| `SolveResult.to_dict` (100 packages) | 23 µs |
 | Single-platform solve (`zlib`) | 74 ms |
 | Single-platform solve (`python=3.12, numpy`) | 241 ms |
-| Multi-platform solve (`zlib`, 2 platforms) | 78 ms |
 
 Run benchmarks:
 
 ```bash
-pixi run bench
+pixi run bench               # pytest-benchmark
+hyperfine 'pixi run -e test conda-solver-api solve -c conda-forge -p linux-64 python=3.12 numpy'
 ```

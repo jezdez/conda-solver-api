@@ -74,6 +74,7 @@ CONDA_NUMBER_CHANNEL_NOTICES = "0"
 CONDA_AGGRESSIVE_UPDATE_PACKAGES = ""
 CONDA_LOCAL_REPODATA_TTL = "300"
 CONDA_JSON = "true"
+CONDA_SOLVER = "rattler"
 
 [tool.pixi.tasks]
 lint = { cmd = "ruff check conda_solver_api tests", description = "Check code style" }

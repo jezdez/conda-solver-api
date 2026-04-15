@@ -1,0 +1,5 @@
+name: small
+channels:
+  - conda-forge
+dependencies:
+  - zlib
