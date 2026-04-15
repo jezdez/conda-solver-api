@@ -56,18 +56,6 @@ conda resolve -c conda-forge -p linux-64 --format explicit zlib
 conda resolve --serve --port 8000
 ```
 
-### As a standalone CLI
-
-```bash
-conda-resolve -c conda-forge -p linux-64 zlib
-
-conda-resolve -f env1.yml -f env2.yml -p linux-64
-
-conda-resolve --override-channels -c my-channel -p linux-64 numpy
-
-conda-resolve --serve
-```
-
 ### Output formats
 
 **resolve-json** (default): full package metadata with sha256, urls,
