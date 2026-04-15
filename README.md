@@ -27,17 +27,18 @@ package lists programmatically.
 
 ## Install
 
-Set up with [pixi](https://pixi.sh):
+Install globally with [pixi](https://pixi.sh):
 
 ```bash
-pixi install
+pixi global install --git https://github.com/jezdez/conda-resolve.git
 ```
 
-Or install manually into an existing conda environment:
+For development, clone the repo and install locally:
 
 ```bash
-conda install conda-rattler-solver
-pip install -e .
+git clone https://github.com/jezdez/conda-resolve.git
+cd conda-resolve
+pixi install
 ```
 
 Requires conda >= 25.3 and Python >= 3.13.
