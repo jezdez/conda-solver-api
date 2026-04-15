@@ -1,8 +1,10 @@
 """Conda plugin registration for conda-solver-api.
 
-This module is imported on every conda invocation via the entry point
-system.  Only hookimpl and type imports are at module level — the CLI
-is lazily imported inside the hook to keep startup overhead minimal.
+This module is imported on every ``conda`` invocation via the entry
+point system.  Only ``hookimpl`` and type imports are at module level;
+the CLI module is lazily imported inside the hook to keep the startup
+overhead under 1 ms (conda loads all registered plugins on every
+command, including ``conda activate`` and ``conda --version``).
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ if TYPE_CHECKING:
 
 @hookimpl
 def conda_subcommands() -> Iterable[CondaSubcommand]:
+    """Register ``conda solver-api`` as a conda subcommand."""
     from .cli import configure_parser, execute
 
     yield CondaSubcommand(

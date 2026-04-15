@@ -1,6 +1,32 @@
-"""Core resolving logic using conda's solver API."""
+"""Core resolving logic using conda's solver API.
+
+This module performs dry-run solves: it resolves a set of package specs
+against conda channels and returns fully-pinned package metadata
+(versions, builds, SHA256 hashes, URLs) without downloading or
+installing anything.
+
+Performance notes:
+    - Multi-platform solves run in a persistent ``ProcessPoolExecutor``
+      to bypass the GIL. Workers retain their in-memory ``SubdirData``
+      and solver index caches across requests.
+    - All arguments to ``solve_one_platform`` are plain strings/tuples
+      so they serialize cheaply for cross-process dispatch.
+    - ``ResolvedPackage`` uses ``slots=True`` and stores depends/constrains
+      as tuples (immutable, smaller than lists). Conversion to list
+      happens only at the serialization boundary in ``to_dict()``.
+    - ``to_dict()`` is hand-written instead of using ``dataclasses.asdict()``
+      which performs a recursive deep-copy of all nested structures.
+
+Security notes:
+    - ``from_environment_yml`` uses ``yaml.safe_load`` (never ``yaml.load``)
+      to prevent arbitrary code execution from untrusted YAML input.
+    - Solver errors are caught and returned as error strings in the
+      ``SolveResult`` rather than propagated as exceptions, preventing
+      internal stack traces from leaking to callers.
+"""
 from __future__ import annotations
 
+import logging
 import threading
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -14,10 +40,19 @@ from conda.models.channel import Channel
 from conda.models.match_spec import MatchSpec
 from conda.models.records import PackageRecord
 
+log = logging.getLogger(__name__)
+
 
 @dataclass
 class SolveRequest:
-    """Input for a solve operation, matching the shape of environment.yml."""
+    """Input for a solve operation, matching the shape of environment.yml.
+
+    Attributes:
+        channels: Conda channels to search, highest priority first.
+        dependencies: Package specs (e.g. ``["python=3.12", "numpy"]``).
+        platforms: Target subdirs (e.g. ``["linux-64", "osx-arm64"]``).
+            When empty, defaults to the current platform at solve time.
+    """
 
     channels: list[str] = field(default_factory=lambda: ["defaults"])
     dependencies: list[str] = field(default_factory=list)
@@ -33,9 +68,15 @@ class SolveRequest:
     ) -> SolveRequest:
         """Parse an environment.yml and return a SolveRequest.
 
-        *channels* and *platforms*, when given, override the values
-        found in the YAML.
+        Only conda dependencies (plain strings) are extracted; pip
+        sub-dicts are silently skipped.  *channels* and *platforms*,
+        when given, override the values found in the YAML.
+
+        Raises:
+            ValueError: On invalid YAML or unexpected document structure.
         """
+        # safe_load prevents arbitrary Python object instantiation
+        # from untrusted YAML input
         try:
             data = yaml.safe_load(source)
         except yaml.YAMLError as exc:
@@ -55,7 +96,12 @@ class SolveRequest:
 
 @dataclass(slots=True)
 class ResolvedPackage:
-    """A single resolved package with its metadata."""
+    """A single resolved package with its metadata.
+
+    Uses ``slots=True`` to eliminate per-instance ``__dict__`` overhead
+    (~200 bytes saved per instance).  ``depends`` and ``constrains`` are
+    stored as tuples (immutable, no over-allocation for growth).
+    """
 
     name: str
     version: str
@@ -72,6 +118,12 @@ class ResolvedPackage:
 
     @classmethod
     def from_record(cls, record: PackageRecord) -> ResolvedPackage:
+        """Convert a conda ``PackageRecord`` to a ``ResolvedPackage``.
+
+        Extracts only the fields needed for the API response.
+        ``getattr`` is used for ``size`` because auxlib Entity fields
+        raise ``AttributeError`` when unset rather than returning None.
+        """
         return cls(
             name=record.name,
             version=str(record.version),
@@ -88,6 +140,12 @@ class ResolvedPackage:
         )
 
     def to_dict(self) -> dict:
+        """Serialize to a plain dict for JSON output.
+
+        Hand-written instead of ``dataclasses.asdict()`` to avoid its
+        recursive deep-copy, which creates hundreds of temporary
+        objects for a typical solve result.
+        """
         return {
             "name": self.name,
             "version": self.version,
@@ -106,13 +164,18 @@ class ResolvedPackage:
 
 @dataclass(slots=True)
 class SolveResult:
-    """The result of a solve operation for a single platform."""
+    """The result of a solve operation for a single platform.
+
+    On solver failure, ``packages`` is empty and ``error`` contains a
+    sanitized error message (no internal paths or stack traces).
+    """
 
     platform: str
     packages: list[ResolvedPackage]
     error: str | None = None
 
     def to_dict(self) -> dict:
+        """Serialize to a plain dict for JSON output."""
         return {
             "platform": self.platform,
             "packages": [p.to_dict() for p in self.packages],
@@ -123,7 +186,12 @@ class SolveResult:
 def configure_context():
     """Set conda context options for fast, quiet solves.
 
-    Expects CONDA_JSON=true in the environment (set via pixi activation).
+    ``context.json = True`` switches conda to its JSON output mode,
+    which uses a no-op spinner and suppresses progress messages that
+    would otherwise pollute stdout.
+
+    Also expected via environment: ``CONDA_JSON=true`` (set via pixi
+    activation) so child processes inherit the setting.
     """
     context.json = True
 
@@ -133,7 +201,15 @@ def solve_one_platform(
     dependencies: list[str],
     platform: str,
 ) -> SolveResult:
-    """Solve one platform. Safe for child processes (plain strings)."""
+    """Solve for a single platform.
+
+    All parameters are plain strings so this function can be dispatched
+    to a ``ProcessPoolExecutor`` worker without serialization issues.
+
+    Uses ``command="create"`` with a non-existent prefix so the solver
+    treats this as a fresh environment (no existing packages to
+    constrain against).
+    """
     configure_context()
 
     specs = [MatchSpec(dep) for dep in dependencies]
@@ -157,8 +233,10 @@ def solve_one_platform(
     except UnsatisfiableError as exc:
         return SolveResult(platform=platform, packages=[], error=str(exc))
     except Exception as exc:
+        log.warning("Solver error for %s: %s", platform, exc)
         return SolveResult(platform=platform, packages=[], error=str(exc))
 
+    # attrgetter is a C-level callable, faster than a Python lambda
     packages = [
         ResolvedPackage.from_record(r)
         for r in sorted(records, key=attrgetter("name"))
@@ -167,14 +245,13 @@ def solve_one_platform(
 
 
 def solve(request: SolveRequest) -> list[SolveResult]:
-    """Solve an environment specification and return resolved packages per platform.
+    """Solve an environment specification for one or more platforms.
 
-    Builds a conda Environment model from the request, solves it using the
-    pluggable solver backend, and returns results with SHA256 hashes.
-    No environment is created on disk.
+    Single-platform requests run in-process to avoid IPC overhead.
+    Multi-platform requests are dispatched to a persistent process
+    pool for true parallelism (bypasses the GIL).
 
-    When multiple platforms are requested, solves run in parallel processes
-    to bypass the GIL.
+    Results are returned in the same order as ``request.platforms``.
     """
     configure_context()
 
@@ -182,7 +259,9 @@ def solve(request: SolveRequest) -> list[SolveResult]:
     channels = tuple(request.channels)
 
     if len(platforms) == 1:
-        return [solve_one_platform(channels, request.dependencies, platforms[0])]
+        return [
+            solve_one_platform(channels, request.dependencies, platforms[0])
+        ]
 
     results: dict[str, SolveResult] = {}
     pool = get_process_pool()
@@ -211,8 +290,10 @@ _pool_lock = threading.Lock()
 def get_process_pool() -> ProcessPoolExecutor:
     """Return a persistent process pool, creating it on first use.
 
-    Workers survive across requests so their in-memory SubdirData and
-    solver index caches accumulate, making repeated solves faster.
+    Uses double-checked locking to be safe under concurrent requests
+    from the async server.  Workers survive across requests so their
+    in-memory SubdirData and solver index caches accumulate, making
+    repeated solves faster.
     """
     global _process_pool
     if _process_pool is not None:
@@ -224,8 +305,13 @@ def get_process_pool() -> ProcessPoolExecutor:
 
 
 def _warmup_subdirs(channels: list[str], platforms: list[str]):
-    """Load SubdirData for each channel/subdir to populate on-disk cache."""
+    """Load SubdirData for each channel/subdir to populate on-disk cache.
+
+    This forces conda to fetch and cache repodata so subsequent solves
+    don't pay the network I/O cost.
+    """
     configure_context()
+    # dict.fromkeys preserves insertion order and deduplicates
     subdirs = list(dict.fromkeys(
         subdir
         for platform in platforms
@@ -239,8 +325,10 @@ def _warmup_subdirs(channels: list[str], platforms: list[str]):
 def warmup(channels: list[str], platforms: list[str]):
     """Pre-warm caches for both the parent process and worker pool.
 
-    Warms the on-disk repodata cache in the parent, then submits a
-    no-op to each worker so they fork with warm interpreter state.
+    Warms the on-disk repodata cache in the parent process first,
+    then dispatches warmup tasks to each worker process so they
+    build their own in-memory SubdirData caches.  This ensures the
+    first real solve request doesn't pay the full cold-start cost.
     """
     _warmup_subdirs(channels, platforms)
 

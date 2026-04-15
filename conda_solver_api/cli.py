@@ -1,7 +1,13 @@
 """CLI for conda-solver-api.
 
-Exposes ``configure_parser`` and ``execute`` for the conda plugin hook,
-and ``main`` for standalone use via the ``conda-solver-api`` script.
+Exposes ``configure_parser`` and ``execute`` for the conda plugin hook
+(``conda solver-api ...``), and ``main`` for standalone use via the
+``conda-solver-api`` script entry point.
+
+The CLI has two subcommands:
+
+- ``solve`` — resolve an environment.yml or inline specs to JSON
+- ``serve`` — start the HTTP API server (uvicorn)
 """
 from __future__ import annotations
 
@@ -15,7 +21,10 @@ from .resolve import SolveRequest, solve
 
 
 def configure_parser(parser: argparse.ArgumentParser):
-    """Add subcommands to the parser (used by both plugin and standalone)."""
+    """Add ``solve`` and ``serve`` subcommands to *parser*.
+
+    Used by both the conda plugin hook and the standalone ``main()``.
+    """
     sub = parser.add_subparsers(dest="subcommand")
 
     solve_p = sub.add_parser(
@@ -52,6 +61,7 @@ def execute(args: argparse.Namespace):
 
 
 def cmd_solve(args: argparse.Namespace):
+    """Resolve packages and write JSON to stdout."""
     if args.file:
         with open(args.file, "rb") as f:
             request = SolveRequest.from_environment_yml(
@@ -79,6 +89,7 @@ def cmd_solve(args: argparse.Namespace):
 
 
 def cmd_serve(args: argparse.Namespace):
+    """Start the HTTP API server via uvicorn."""
     uvicorn.run(
         "conda_solver_api.app:app", host=args.host, port=args.port
     )
