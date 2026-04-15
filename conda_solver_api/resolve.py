@@ -58,6 +58,9 @@ VIRTUAL_PACKAGE_DEFAULTS: dict[str, dict[str, str]] = {
 }
 
 
+_current_platform: str | None = None
+
+
 def configure_platform(platform: str):
     """Set CONDA_SUBDIR and virtual package overrides for the target platform.
 
@@ -65,9 +68,15 @@ def configure_platform(platform: str):
     generates the correct virtual packages (``__glibc``, ``__linux``,
     ``__osx``, etc.) for the target platform rather than the host.
 
+    Skips re-initialization when the platform has not changed (common
+    in server workloads that repeatedly solve for the same target).
     Only sets overrides if not already present in the environment,
     allowing callers to provide their own values.
     """
+    global _current_platform
+    if _current_platform == platform:
+        return
+
     os.environ["CONDA_SUBDIR"] = platform
 
     for prefix, overrides in VIRTUAL_PACKAGE_DEFAULTS.items():
@@ -77,6 +86,7 @@ def configure_platform(platform: str):
             break
 
     context.__init__()
+    _current_platform = platform
 
 
 @dataclass
@@ -248,8 +258,8 @@ def solve_one_platform(
     a non-existent prefix so the solver treats this as a fresh
     environment.
     """
-    configure_context()
     configure_platform(platform)
+    configure_context()
 
     specs = [MatchSpec(dep) for dep in dependencies]
 
@@ -292,8 +302,6 @@ def solve(request: SolveRequest) -> list[SolveResult]:
 
     Results are returned in the same order as ``request.platforms``.
     """
-    configure_context()
-
     platforms = request.platforms or [context.subdir]
     channels = tuple(request.channels)
 
@@ -349,9 +357,9 @@ def _warmup_subdirs(channels: list[str], platforms: list[str]):
     This forces conda to fetch and cache repodata so subsequent solves
     don't pay the network I/O cost.
     """
-    configure_context()
     if platforms:
         configure_platform(platforms[0])
+    configure_context()
     # dict.fromkeys preserves insertion order and deduplicates
     subdirs = list(dict.fromkeys(
         subdir

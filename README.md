@@ -16,6 +16,9 @@ package lists programmatically.
 - Cross-platform solving (e.g. solve for `linux-64` from macOS) with
   automatic virtual package injection (`__glibc`, `__linux`, `__osx`)
 - Multi-platform solves run in parallel via `ProcessPoolExecutor`
+- Multiple output formats: JSON (default), explicit lockfile, text
+- Multiple `--file` inputs merged into a single solve
+- Conda-native CLI flags (`--override-channels`, `--solver`, `--offline`, etc.)
 - HTTP API with JSON input/output (Starlette + uvicorn)
 - Repodata cache pre-warming on server startup
 - Conda plugin: `conda solver-api solve` / `conda solver-api serve`
@@ -49,6 +52,8 @@ conda solver-api solve -c conda-forge -p linux-64 python=3.12 numpy
 
 conda solver-api solve -f environment.yml -p linux-64 -p osx-arm64
 
+conda solver-api solve -c conda-forge -p linux-64 --explicit --md5 zlib
+
 conda solver-api serve --port 8000
 ```
 
@@ -57,9 +62,30 @@ conda solver-api serve --port 8000
 ```bash
 conda-solver-api solve -c conda-forge -p linux-64 zlib
 
-conda-solver-api solve -f environment.yml
+conda-solver-api solve -f env1.yml -f env2.yml -p linux-64
+
+conda-solver-api solve --override-channels -c my-channel -p linux-64 numpy
+
+conda-solver-api solve --solver rattler -c conda-forge -p linux-64 zlib
 
 conda-solver-api serve
+```
+
+### Output formats
+
+**JSON** (default): full package metadata with SHA256, URLs, dependencies.
+
+**Explicit lockfile** (`--explicit`): one URL per line, compatible with
+`conda create --file`. Add `--md5` to append MD5 hashes.
+
+```bash
+conda-solver-api solve -c conda-forge -p linux-64 --explicit --md5 zlib
+```
+
+**Text** (`--no-channels` and/or `--no-builds`): compact text listing.
+
+```bash
+conda-solver-api solve -c conda-forge -p linux-64 --no-channels --no-builds zlib
 ```
 
 ### Output format
