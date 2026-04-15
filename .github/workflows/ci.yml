@@ -32,7 +32,7 @@ jobs:
           cache: true
       - uses: actions/cache@v4
         with:
-          path: ~/.conda/pkgs/cache
+          path: ~/.cache/rattler/cache
           key: repodata-${{ runner.os }}-${{ hashFiles('pixi.lock') }}
           restore-keys: repodata-${{ runner.os }}-
       - run: pixi run -e test test
@@ -50,7 +50,7 @@ jobs:
           cache: true
       - uses: actions/cache@v4
         with:
-          path: ~/.conda/pkgs/cache
+          path: ~/.cache/rattler/cache
           key: repodata-${{ runner.os }}-${{ hashFiles('pixi.lock') }}
           restore-keys: repodata-${{ runner.os }}-
       - run: pixi run -e test bench
