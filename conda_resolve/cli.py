@@ -4,9 +4,9 @@ Exposes ``configure_parser`` and ``execute`` for the conda plugin hook
 (``conda resolve ...``), and ``main`` for standalone use via the
 ``conda-resolve`` script entry point.
 
-The CLI uses conda's ``Environment`` model and exporter plugins
-end-to-end, avoiding intermediate types.  The default output format
-is ``environment-json``.
+The default output format is ``resolve-json``, a custom exporter that
+includes full package metadata (sha256, urls, sizes, etc.).  Use
+``--format`` to select other conda exporter formats (explicit, yaml).
 
 Resolve is the default action.  Use ``--serve`` to start the HTTP API
 server instead.
@@ -26,7 +26,7 @@ from conda.models.environment import Environment
 
 from .resolve import solve_environments
 
-ENVIRONMENT_JSON_FORMAT = "environment-json"
+DEFAULT_FORMAT = "resolve-json"
 
 
 def configure_parser(parser: argparse.ArgumentParser):
@@ -63,21 +63,13 @@ def configure_parser(parser: argparse.ArgumentParser):
     output_group = parser.add_argument_group("Output Format")
     output_group.add_argument(
         "--format",
-        default=ENVIRONMENT_JSON_FORMAT,
+        default=DEFAULT_FORMAT,
         dest="output_format",
         metavar="FORMAT",
-        help="Output format using conda's export plugins "
-        "(e.g. explicit, yaml, json, requirements). "
-        "Default: environment-json.",
+        help="Output format using conda's export plugins. "
+        "'resolve-json' (default) outputs full package metadata "
+        "with sha256, urls, etc. Also: explicit, yaml, requirements.",
     )
-    output_group.add_argument(
-        "--explicit",
-        action="store_const",
-        const="explicit",
-        dest="output_format",
-        help="Shorthand for --format explicit.",
-    )
-
     server_group = parser.add_argument_group("HTTP Server")
     server_group.add_argument(
         "--serve",

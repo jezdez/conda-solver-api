@@ -8,6 +8,13 @@ import pytest
 from conda_resolve.cli import main
 
 
+def _package_names(out: str) -> list[str]:
+    """Extract package names from the default resolve-json output."""
+    data = json.loads(out)
+    assert isinstance(data, dict)
+    return [p["name"] for p in data["packages"]]
+
+
 def test_solve_with_file(capsys, monkeypatch, environment_yml_path):
     monkeypatch.setattr(
         "sys.argv",
@@ -22,10 +29,8 @@ def test_solve_with_file(capsys, monkeypatch, environment_yml_path):
     main()
     out = capsys.readouterr().out
     data = json.loads(out)
-    assert "dependencies" in data
-    deps = data["dependencies"]
-    names = [d.split("=")[0] for d in deps]
-    assert "python" in names
+    assert data["platform"] == "linux-64"
+    assert "python" in _package_names(out)
 
 
 def test_solve_with_inline_specs(capsys, monkeypatch):
@@ -43,11 +48,12 @@ def test_solve_with_inline_specs(capsys, monkeypatch):
     main()
     out = capsys.readouterr().out
     data = json.loads(out)
-    assert isinstance(data, dict)
-    assert "dependencies" in data
-    deps = data["dependencies"]
-    names = [d.split("=")[0] for d in deps]
-    assert "zlib" in names
+    assert data["platform"] == "linux-64"
+    assert "zlib" in _package_names(out)
+    pkg = data["packages"][0]
+    assert "sha256" in pkg
+    assert "url" in pkg
+    assert "channel" in pkg
 
 
 def test_solve_file_channels_override(
@@ -68,7 +74,7 @@ def test_solve_file_channels_override(
     main()
     out = capsys.readouterr().out
     data = json.loads(out)
-    assert "dependencies" in data
+    assert data["packages"]
 
 
 def test_solve_no_args_exits(capsys, monkeypatch):
@@ -100,25 +106,6 @@ def test_solve_multi_platform_yaml(capsys, monkeypatch):
     main()
     out = capsys.readouterr().out
     assert "dependencies:" in out
-
-
-def test_solve_explicit_output(capsys, monkeypatch):
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "conda-resolve",
-            "-c",
-            "conda-forge",
-            "-p",
-            "linux-64",
-            "--explicit",
-            "zlib",
-        ],
-    )
-    main()
-    out = capsys.readouterr().out
-    assert "@EXPLICIT" in out
-    assert "https://" in out
 
 
 def test_solve_format_explicit(capsys, monkeypatch):
@@ -186,8 +173,6 @@ def test_solve_multiple_files(
     )
     main()
     out = capsys.readouterr().out
-    data = json.loads(out)
-    deps = data["dependencies"]
-    names = [d.split("=")[0] for d in deps]
+    names = _package_names(out)
     assert "zlib" in names
     assert "bzip2" in names

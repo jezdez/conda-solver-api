@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from conda.plugins import hookimpl
-from conda.plugins.types import CondaSubcommand
+from conda.plugins.types import CondaEnvironmentExporter, CondaSubcommand
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -30,4 +30,18 @@ def conda_subcommands() -> Iterable[CondaSubcommand]:
         ),
         action=execute,
         configure_parser=configure_parser,
+    )
+
+
+@hookimpl
+def conda_environment_exporters() -> Iterable[CondaEnvironmentExporter]:
+    """Register the ``resolve-json`` exporter format."""
+    from .exporter import export_resolve_json
+
+    yield CondaEnvironmentExporter(
+        name="resolve-json",
+        aliases=(),
+        default_filenames=(),
+        export=export_resolve_json,
+        description="Full package metadata with sha256, urls, sizes",
     )

@@ -39,16 +39,6 @@ def test_plugin_parser_accepts_solver_flag():
     assert args.solver == "rattler"
 
 
-def test_plugin_parser_accepts_explicit_flag():
-    sc = next(iter(conda_subcommands()))
-    parser = argparse.ArgumentParser()
-    sc.configure_parser(parser)
-    args = parser.parse_args(
-        ["--explicit", "-c", "conda-forge", "zlib"]
-    )
-    assert args.output_format == "explicit"
-
-
 def test_plugin_parser_accepts_format_flag():
     sc = next(iter(conda_subcommands()))
     parser = argparse.ArgumentParser()
@@ -66,7 +56,7 @@ def test_plugin_parser_default_format_is_json():
     args = parser.parse_args(
         ["-c", "conda-forge", "zlib"]
     )
-    assert args.output_format == "environment-json"
+    assert args.output_format == "resolve-json"
 
 
 def test_plugin_parser_serve_flag():
