@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-04-15
+
+### Added
+
+- Minimal, hardened Docker image using multi-stage build with
+  `debian:bookworm-slim` and non-root user.
+- Docker release workflow publishing multi-arch images (linux/amd64,
+  linux/arm64) to GitHub Container Registry on release and manual
+  dispatch.
+- Dependabot configuration for Docker base image updates.
+- Automated pixi lockfile update workflow (monthly, via
+  `pixi-diff-to-markdown`).
+- `linux-aarch64` platform support.
+
+### Fixed
+
+- Default platform detection after server warmup. The warmup loop
+  left a stale platform in `context._cache_`, causing the server to
+  default to the wrong platform. Now captured once at import time
+  as `NATIVE_SUBDIR`.
+
 ## [0.1.0] - 2026-04-15
 
 ### Added
@@ -59,4 +80,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependabot configuration for GitHub Actions version updates.
 - BSD 3-Clause license.
 
+[0.1.1]: https://github.com/jezdez/conda-resolve/releases/tag/v0.1.1
 [0.1.0]: https://github.com/jezdez/conda-resolve/releases/tag/v0.1.0
