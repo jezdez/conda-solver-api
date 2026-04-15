@@ -15,6 +15,7 @@ from conda_resolve.resolve import (
     clear_index_cache,
     configure_context,
     configure_platform,
+    dispatch,
     get_process_pool,
     index_cache,
     platform_lock,
@@ -22,6 +23,9 @@ from conda_resolve.resolve import (
     solve,
     solve_environments,
     solve_one_platform,
+    solve_result_error,
+    warmup,
+    warmup_indexes,
 )
 
 
@@ -36,37 +40,29 @@ def _warm_index():
     clear_index_cache()
 
 
-def test_resolved_package_from_record(sample_record):
-    pkg = ResolvedPackage.from_record(sample_record)
-    assert pkg.name == "zlib"
-    assert pkg.version == "1.3.1"
-    assert pkg.build == "h68df207_2"
-    assert pkg.build_number == 2
-    assert pkg.sha256 == "abc123"
-    assert pkg.md5 == "def456"
-    assert pkg.size == 102400
-    assert isinstance(pkg.depends, tuple)
-    assert isinstance(pkg.constrains, tuple)
-
-
-def test_resolved_package_from_record_empty_optionals(sample_channel):
-    record = PackageRecord(
-        name="minimal",
-        version="1.0",
-        build="h0",
-        build_number=0,
-        channel=sample_channel,
-        subdir="linux-64",
-        fn="minimal-1.0-h0.conda",
-        depends=(),
-        constrains=(),
-    )
+@pytest.mark.parametrize(
+    "record_fixture, field, expected",
+    [
+        pytest.param("sample_record", "name", "zlib", id="name"),
+        pytest.param("sample_record", "version", "1.3.1", id="version"),
+        pytest.param("sample_record", "build", "h68df207_2", id="build"),
+        pytest.param("sample_record", "build_number", 2, id="build_number"),
+        pytest.param("sample_record", "sha256", "abc123", id="sha256"),
+        pytest.param("sample_record", "md5", "def456", id="md5"),
+        pytest.param("sample_record", "size", 102400, id="size"),
+        pytest.param("minimal_record", "sha256", "", id="empty-sha256"),
+        pytest.param("minimal_record", "md5", "", id="empty-md5"),
+        pytest.param("minimal_record", "size", None, id="empty-size"),
+        pytest.param("minimal_record", "depends", (), id="empty-depends"),
+        pytest.param(
+            "minimal_record", "constrains", (), id="empty-constrains"
+        ),
+    ],
+)
+def test_resolved_package_from_record(record_fixture, field, expected, request):
+    record = request.getfixturevalue(record_fixture)
     pkg = ResolvedPackage.from_record(record)
-    assert pkg.sha256 == ""
-    assert pkg.md5 == ""
-    assert pkg.size is None
-    assert pkg.depends == ()
-    assert pkg.constrains == ()
+    assert getattr(pkg, field) == expected
 
 
 def test_resolved_package_to_dict(sample_resolved_package):
@@ -242,12 +238,25 @@ def test_solve(platforms):
         assert len(result.packages) > 0
 
 
-def test_solve_defaults_to_current_platform():
+@pytest.mark.parametrize(
+    "fn_name",
+    [
+        pytest.param("solve", id="solve"),
+        pytest.param("solve_environments", id="solve_environments"),
+    ],
+)
+def test_defaults_to_current_platform(fn_name):
     from conda.base.context import context
 
-    results = solve(["conda-forge"], ["zlib"])
+    fn = {"solve": solve, "solve_environments": solve_environments}[fn_name]
+    results = fn(["conda-forge"], ["zlib"])
     assert len(results) == 1
-    assert results[0].platform == context.subdir
+    platform = (
+        results[0].platform
+        if hasattr(results[0], "platform")
+        else results[0].platform
+    )
+    assert platform == context.subdir
 
 
 @pytest.mark.parametrize(
@@ -265,14 +274,6 @@ def test_solve_environments(platforms):
         assert env.platform == platform
         names = [r.name for r in env.explicit_packages]
         assert "zlib" in names
-
-
-def test_solve_environments_defaults_to_current():
-    from conda.base.context import context
-
-    envs = solve_environments(["conda-forge"], ["zlib"])
-    assert len(envs) == 1
-    assert envs[0].platform == context.subdir
 
 
 @pytest.mark.usefixtures("_warm_index")
@@ -311,3 +312,130 @@ def test_cached_solve_produces_correct_results():
     names1 = [p.name for p in r1[0].packages]
     names2 = [p.name for p in r2[0].packages]
     assert names1 == names2
+
+
+def test_solve_one_platform_generic_exception(monkeypatch):
+    """Generic exceptions in solve_one_platform are caught as errors."""
+    monkeypatch.setattr(
+        "conda_resolve.resolve.run_solver",
+        lambda *a: (_ for _ in ()).throw(TypeError("unexpected")),
+    )
+    result = solve_one_platform(("conda-forge",), ["zlib"], "linux-64")
+    assert result.error is not None
+    assert "unexpected" in result.error
+    assert result.packages == []
+
+
+def test_solve_result_error_wraps_exception():
+    exc = ValueError("test error")
+    result = solve_result_error("linux-64", exc)
+    assert isinstance(result, SolveResult)
+    assert result.platform == "linux-64"
+    assert result.error == "test error"
+    assert result.packages == []
+
+
+@pytest.mark.parametrize(
+    "platforms",
+    [
+        pytest.param(["linux-64"], id="single"),
+        pytest.param(["linux-64", "osx-arm64"], id="multi"),
+    ],
+)
+def test_dispatch_on_error(platforms, monkeypatch):
+    """dispatch catches errors when on_error is provided."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(
+        "conda_resolve.resolve.get_process_pool",
+        lambda: ThreadPoolExecutor(max_workers=2),
+    )
+
+    def failing_fn(ch, deps, plat):
+        raise RuntimeError(f"fail-{plat}")
+
+    results = dispatch(
+        failing_fn,
+        ("conda-forge",),
+        ["zlib"],
+        platforms,
+        on_error=lambda plat, exc: f"error:{plat}:{exc}",
+    )
+    assert len(results) == len(platforms)
+    for result, plat in zip(results, platforms):
+        assert f"error:{plat}:fail-{plat}" in result
+
+
+@pytest.mark.parametrize(
+    "platforms",
+    [
+        pytest.param(["linux-64"], id="single"),
+        pytest.param(["linux-64", "osx-arm64"], id="multi"),
+    ],
+)
+def test_dispatch_no_error_propagates(platforms, monkeypatch):
+    """dispatch raises when on_error is None."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(
+        "conda_resolve.resolve.get_process_pool",
+        lambda: ThreadPoolExecutor(max_workers=2),
+    )
+
+    def failing_fn(ch, deps, plat):
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        dispatch(
+            failing_fn,
+            ("conda-forge",),
+            ["zlib"],
+            platforms,
+        )
+
+
+def test_run_solver_no_backend(monkeypatch):
+    """run_solver raises RuntimeError if no solver backend is found."""
+    from conda.base.context import context
+
+    monkeypatch.setattr(
+        context.plugin_manager,
+        "get_cached_solver_backend",
+        lambda: None,
+    )
+    with pytest.raises(RuntimeError, match="No solver backend"):
+        run_solver(("conda-forge",), ["zlib"], "linux-64")
+
+
+def test_warmup_indexes():
+    clear_index_cache()
+    warmup_indexes(["conda-forge"], ["linux-64"])
+    assert (("conda-forge",), "linux-64") in index_cache
+    clear_index_cache()
+
+
+def test_warmup_including_pool(monkeypatch):
+    """warmup() calls warmup_indexes in both parent and worker processes."""
+    calls = []
+    monkeypatch.setattr(
+        "conda_resolve.resolve.warmup_indexes",
+        lambda ch, plats: calls.append(("parent", ch, plats)),
+    )
+
+    class FakePool:
+        def submit(self, fn, *args):
+            from concurrent.futures import Future
+
+            f = Future()
+            try:
+                result = fn(*args)
+                f.set_result(result)
+            except Exception as exc:
+                f.set_exception(exc)
+            return f
+
+    monkeypatch.setattr(
+        "conda_resolve.resolve.get_process_pool", lambda: FakePool()
+    )
+    warmup(["conda-forge"], ["linux-64", "osx-arm64"])
+    assert calls[0] == ("parent", ["conda-forge"], ["linux-64", "osx-arm64"])

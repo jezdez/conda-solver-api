@@ -5,7 +5,7 @@ import argparse
 
 import pytest
 
-from conda_resolve.plugin import conda_subcommands
+from conda_resolve.plugin import conda_environment_exporters, conda_subcommands
 
 
 @pytest.fixture()
@@ -89,3 +89,11 @@ def test_plugin_yields_subcommand():
 def test_parser_flag(parser, argv, attr, expected):
     args = parser.parse_args(argv)
     assert getattr(args, attr) == expected
+
+
+def test_plugin_yields_exporter():
+    exporters = list(conda_environment_exporters())
+    assert len(exporters) == 1
+    exp = exporters[0]
+    assert exp.name == "resolve-json"
+    assert callable(exp.export)

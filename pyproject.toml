@@ -39,7 +39,14 @@ select = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra -v --benchmark-disable"
+addopts = "-ra -v --benchmark-disable --cov=conda_resolve --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["conda_resolve"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 95
 
 [tool.pixi.workspace]
 channels = ["conda-canary/label/dev", "conda-forge"]
@@ -59,6 +66,7 @@ ruff = ">=0.9"
 [tool.pixi.feature.test.dependencies]
 pytest = ">=8.0"
 pytest-benchmark = ">=5.0"
+pytest-cov = ">=6.0"
 httpx = ">=0.28"
 
 [tool.pixi.environments]

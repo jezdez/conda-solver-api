@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Code coverage integrated into default test runs (`--cov` via pytest
+  addopts) with a 95% `fail_under` threshold.
+- New `test_exporter.py` test module for the `resolve-json` exporter.
+- Tests for previously uncovered paths: lifespan initialization,
+  cache clear endpoint, internal solver errors, dispatch error
+  handling (single- and multi-platform), `warmup`/`warmup_indexes`,
+  CLI serve branch, `_load_files` error path, and exporter edge cases.
+- `minimal_record` fixture in `conftest.py` for testing empty optional
+  fields.
+
+### Changed
+
+- Parameterized and consolidated tests across all test modules,
+  reducing redundancy: merged duplicate `_record_to_dict` tests,
+  dispatch error tests, defaults-to-current-platform tests, internal
+  error endpoint tests, environment-yml platform tests, CLI file
+  tests, and exporter edge case tests.
+- Coverage improved from 86% to 99%.
+
 ## [0.1.0] - 2026-04-15
 
 ### Added

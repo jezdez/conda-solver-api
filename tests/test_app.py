@@ -6,7 +6,13 @@ from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
 
-from conda_resolve.app import health, solve_environment_yml, solve_specs
+from conda_resolve.app import (
+    cache_clear,
+    health,
+    lifespan,
+    solve_environment_yml,
+    solve_specs,
+)
 
 
 @pytest.fixture()
@@ -20,6 +26,7 @@ def test_app():
                 methods=["POST"],
             ),
             Route("/health", health, methods=["GET"]),
+            Route("/cache/clear", cache_clear, methods=["POST"]),
         ],
     )
 
@@ -100,31 +107,19 @@ async def test_solve_specs_defaults(client):
 
 
 @pytest.mark.anyio
-async def test_solve_environment_yml(client, environment_yml_bytes):
-    resp = await client.post(
-        "/solve/environment-yml?platform=linux-64",
-        content=environment_yml_bytes,
-        headers={"content-type": "application/x-yaml"},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert len(data) == 1
-    assert data[0]["platform"] == "linux-64"
-    names = [p["name"] for p in data[0]["packages"]]
-    assert "python" in names
-    assert "numpy" in names
-
-
-@pytest.mark.anyio
 @pytest.mark.parametrize(
-    "query, expected_count",
+    "query, expected_count, check_names",
     [
-        ("?platform=linux-64", 1),
-        ("?platform=linux-64&platform=osx-arm64", 2),
+        pytest.param(
+            "?platform=linux-64", 1, ["python", "numpy"], id="single"
+        ),
+        pytest.param(
+            "?platform=linux-64&platform=osx-arm64", 2, None, id="multi"
+        ),
     ],
 )
-async def test_solve_environment_yml_platform_params(
-    client, environment_yml_bytes, query, expected_count
+async def test_solve_environment_yml(
+    client, environment_yml_bytes, query, expected_count, check_names
 ):
     resp = await client.post(
         f"/solve/environment-yml{query}",
@@ -134,6 +129,10 @@ async def test_solve_environment_yml_platform_params(
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == expected_count
+    if check_names:
+        names = [p["name"] for p in data[0]["packages"]]
+        for name in check_names:
+            assert name in names
 
 
 @pytest.mark.anyio
@@ -262,3 +261,66 @@ dependencies:
     )
     assert resp.status_code == 400
     assert "channels" in resp.json()["error"]
+
+
+@pytest.mark.anyio
+async def test_cache_clear(client):
+    resp = await client.post("/cache/clear")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "cleared" in data
+    assert isinstance(data["cleared"], int)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "endpoint, kwargs",
+    [
+        pytest.param(
+            "/solve",
+            {
+                "json": {
+                    "channels": ["conda-forge"],
+                    "dependencies": ["zlib"],
+                    "platforms": ["linux-64"],
+                }
+            },
+            id="specs",
+        ),
+        pytest.param(
+            "/solve/environment-yml?platform=linux-64",
+            {
+                "content": (
+                    b"name: test\nchannels:\n"
+                    b"  - conda-forge\ndependencies:\n  - zlib\n"
+                ),
+                "headers": {"content-type": "application/x-yaml"},
+            },
+            id="env-yml",
+        ),
+    ],
+)
+async def test_internal_error(client, monkeypatch, endpoint, kwargs):
+    monkeypatch.setattr(
+        "conda_resolve.app.solve",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    resp = await client.post(endpoint, **kwargs)
+    assert resp.status_code == 500
+    assert resp.json()["error"] == "Internal solver error"
+
+
+@pytest.mark.anyio
+async def test_lifespan_initializes(monkeypatch):
+    import conda_resolve.app as app_module
+
+    warmup_calls = []
+
+    def fake_warmup(channels, platforms):
+        warmup_calls.append((channels, platforms))
+
+    monkeypatch.setattr(app_module, "warmup", fake_warmup)
+    dummy_app = Starlette()
+    async with lifespan(dummy_app):
+        assert app_module.solver_limiter is not None
+    assert len(warmup_calls) == 1

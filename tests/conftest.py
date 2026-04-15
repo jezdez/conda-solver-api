@@ -54,6 +54,22 @@ def sample_record(make_package_record):
 
 
 @pytest.fixture()
+def minimal_record(sample_channel):
+    """PackageRecord with no optional fields (sha256, md5, size)."""
+    return PackageRecord(
+        name="minimal",
+        version="1.0",
+        build="h0",
+        build_number=0,
+        channel=sample_channel,
+        subdir="linux-64",
+        fn="minimal-1.0-h0.conda",
+        depends=(),
+        constrains=(),
+    )
+
+
+@pytest.fixture()
 def sample_resolved_package():
     return ResolvedPackage(
         name="zlib",
