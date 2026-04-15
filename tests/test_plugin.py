@@ -3,7 +3,18 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from conda_resolve.plugin import conda_subcommands
+
+
+@pytest.fixture()
+def parser():
+    """Configured argument parser from the plugin's subcommand."""
+    sc = next(iter(conda_subcommands()))
+    p = argparse.ArgumentParser()
+    sc.configure_parser(p)
+    return p
 
 
 def test_plugin_yields_subcommand():
@@ -16,53 +27,65 @@ def test_plugin_yields_subcommand():
     assert callable(sc.configure_parser)
 
 
-def test_plugin_configure_parser():
-    sc = next(iter(conda_subcommands()))
-    parser = argparse.ArgumentParser()
-    sc.configure_parser(parser)
-    args = parser.parse_args(
-        ["-c", "conda-forge", "-p", "linux-64", "zlib"]
-    )
-    assert args.channel == ["conda-forge"]
-    assert args.platforms == ["linux-64"]
-    assert args.specs == ["zlib"]
-    assert args.serve is False
-
-
-def test_plugin_parser_accepts_solver_flag():
-    sc = next(iter(conda_subcommands()))
-    parser = argparse.ArgumentParser()
-    sc.configure_parser(parser)
-    args = parser.parse_args(
-        ["--solver", "rattler", "-c", "conda-forge", "zlib"]
-    )
-    assert args.solver == "rattler"
-
-
-def test_plugin_parser_accepts_format_flag():
-    sc = next(iter(conda_subcommands()))
-    parser = argparse.ArgumentParser()
-    sc.configure_parser(parser)
-    args = parser.parse_args(
-        ["--format", "yaml", "-c", "conda-forge", "zlib"]
-    )
-    assert args.output_format == "yaml"
-
-
-def test_plugin_parser_default_format_is_json():
-    sc = next(iter(conda_subcommands()))
-    parser = argparse.ArgumentParser()
-    sc.configure_parser(parser)
-    args = parser.parse_args(
-        ["-c", "conda-forge", "zlib"]
-    )
-    assert args.output_format == "resolve-json"
-
-
-def test_plugin_parser_serve_flag():
-    sc = next(iter(conda_subcommands()))
-    parser = argparse.ArgumentParser()
-    sc.configure_parser(parser)
-    args = parser.parse_args(["--serve", "--port", "9000"])
-    assert args.serve is True
-    assert args.port == 9000
+@pytest.mark.parametrize(
+    "argv, attr, expected",
+    [
+        pytest.param(
+            ["-c", "conda-forge", "-p", "linux-64", "zlib"],
+            "channel",
+            ["conda-forge"],
+            id="channel",
+        ),
+        pytest.param(
+            ["-c", "conda-forge", "-p", "linux-64", "zlib"],
+            "platforms",
+            ["linux-64"],
+            id="platform",
+        ),
+        pytest.param(
+            ["-c", "conda-forge", "-p", "linux-64", "zlib"],
+            "specs",
+            ["zlib"],
+            id="specs",
+        ),
+        pytest.param(
+            ["-c", "conda-forge", "zlib"],
+            "serve",
+            False,
+            id="serve-default",
+        ),
+        pytest.param(
+            ["--serve", "--port", "9000"],
+            "serve",
+            True,
+            id="serve-flag",
+        ),
+        pytest.param(
+            ["--serve", "--port", "9000"],
+            "port",
+            9000,
+            id="serve-port",
+        ),
+        pytest.param(
+            ["--solver", "rattler", "-c", "conda-forge", "zlib"],
+            "solver",
+            "rattler",
+            id="solver",
+        ),
+        pytest.param(
+            ["--format", "yaml", "-c", "conda-forge", "zlib"],
+            "output_format",
+            "yaml",
+            id="format-yaml",
+        ),
+        pytest.param(
+            ["-c", "conda-forge", "zlib"],
+            "output_format",
+            "resolve-json",
+            id="format-default",
+        ),
+    ],
+)
+def test_parser_flag(parser, argv, attr, expected):
+    args = parser.parse_args(argv)
+    assert getattr(args, attr) == expected

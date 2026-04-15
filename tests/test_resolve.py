@@ -9,19 +9,31 @@ from conda.models.environment import Environment
 from conda.models.records import PackageRecord
 
 from conda_resolve.resolve import (
-    INDEX_TTL_SECONDS,
     ResolvedPackage,
     SolveResult,
+    build_index,
+    clear_index_cache,
     configure_context,
     configure_platform,
-    get_or_build_index,
     get_process_pool,
     index_cache,
     run_solver,
     solve,
     solve_environments,
     solve_one_platform,
+    platform_lock,
 )
+
+
+@pytest.fixture()
+def _warm_index():
+    """Prepare a clean index cache with platform/context configured."""
+    clear_index_cache()
+    with platform_lock:
+        configure_platform("linux-64")
+        configure_context()
+        yield
+    clear_index_cache()
 
 
 def test_resolved_package_from_record(sample_record):
@@ -86,9 +98,7 @@ def test_resolved_package_to_dict(sample_resolved_package):
         ((), []),
     ],
 )
-def test_resolved_package_to_dict_depends_types(
-    depends_in, depends_out
-):
+def test_resolved_package_to_dict_depends_types(depends_in, depends_out):
     pkg = ResolvedPackage(
         name="x",
         version="1",
@@ -106,21 +116,27 @@ def test_resolved_package_to_dict_depends_types(
     assert pkg.to_dict()["depends"] == depends_out
 
 
-def test_solve_result_to_dict(sample_solve_result):
-    d = sample_solve_result.to_dict()
-    assert d["platform"] == "linux-64"
-    assert len(d["packages"]) == 1
-    assert d["packages"][0]["name"] == "zlib"
-    assert d["error"] is None
-
-
-def test_solve_result_error_to_dict():
-    result = SolveResult(
-        platform="linux-64", packages=[], error="solver failed"
-    )
+@pytest.mark.parametrize(
+    "packages, error, expected_error, expected_count",
+    [
+        pytest.param(
+            None, None, None, 1,
+            id="success",
+        ),
+        pytest.param(
+            [], "solver failed", "solver failed", 0,
+            id="error",
+        ),
+    ],
+)
+def test_solve_result_to_dict(
+    packages, error, expected_error, expected_count, sample_resolved_package
+):
+    pkgs = [sample_resolved_package] if packages is None else packages
+    result = SolveResult(platform="linux-64", packages=pkgs, error=error)
     d = result.to_dict()
-    assert d["error"] == "solver failed"
-    assert d["packages"] == []
+    assert d["error"] == expected_error
+    assert len(d["packages"]) == expected_count
 
 
 def test_configure_context_sets_json():
@@ -130,24 +146,20 @@ def test_configure_context_sets_json():
     assert context.json is True
 
 
-def test_get_process_pool_returns_executor():
-    pool = get_process_pool()
-    assert isinstance(pool, ProcessPoolExecutor)
-
-
-def test_get_process_pool_is_singleton():
+def test_get_process_pool():
     pool1 = get_process_pool()
     pool2 = get_process_pool()
+    assert isinstance(pool1, ProcessPoolExecutor)
     assert pool1 is pool2
 
 
 def test_get_process_pool_threadsafe():
     pools = []
 
-    def _grab():
+    def grab():
         pools.append(get_process_pool())
 
-    threads = [threading.Thread(target=_grab) for _ in range(8)]
+    threads = [threading.Thread(target=grab) for _ in range(8)]
     for t in threads:
         t.start()
     for t in threads:
@@ -155,7 +167,7 @@ def test_get_process_pool_threadsafe():
     assert all(p is pools[0] for p in pools)
 
 
-def test_run_solver_returns_records():
+def test_run_solver_returns_sorted_records():
     records = run_solver(
         channels=("conda-forge",),
         dependencies=["zlib"],
@@ -178,36 +190,27 @@ def test_run_solver_unsatisfiable():
         )
 
 
-def test_solve_one_platform_returns_result():
+@pytest.mark.parametrize(
+    "deps",
+    [
+        pytest.param(["zlib"], id="single-dep"),
+        pytest.param(["python=3.12", "zlib"], id="multi-dep"),
+    ],
+)
+def test_solve_one_platform(deps):
     result = solve_one_platform(
         channels=("conda-forge",),
-        dependencies=["zlib"],
+        dependencies=deps,
         platform="linux-64",
     )
     assert isinstance(result, SolveResult)
     assert result.platform == "linux-64"
     assert result.error is None
-    assert len(result.packages) > 0
-    names = [p.name for p in result.packages]
-    assert "zlib" in names
-
-
-def test_solve_one_platform_packages_sorted():
-    result = solve_one_platform(
-        channels=("conda-forge",),
-        dependencies=["zlib"],
-        platform="linux-64",
-    )
     names = [p.name for p in result.packages]
     assert names == sorted(names)
-
-
-def test_solve_one_platform_has_hashes():
-    result = solve_one_platform(
-        channels=("conda-forge",),
-        dependencies=["zlib"],
-        platform="linux-64",
-    )
+    for dep in deps:
+        name = dep.split("=")[0].split(">")[0].split("<")[0].strip()
+        assert name in names
     for pkg in result.packages:
         assert pkg.sha256, f"{pkg.name} missing sha256"
         assert pkg.url, f"{pkg.name} missing url"
@@ -223,23 +226,20 @@ def test_solve_one_platform_unsatisfiable():
     assert result.packages == []
 
 
-def test_solve_single_platform():
-    results = solve(["conda-forge"], ["zlib"], ["linux-64"])
-    assert len(results) == 1
-    assert results[0].platform == "linux-64"
-    assert results[0].error is None
-
-
-def test_solve_multi_platform():
-    results = solve(
-        ["conda-forge"], ["zlib"], ["linux-64", "osx-arm64"]
-    )
-    assert len(results) == 2
-    platforms = [r.platform for r in results]
-    assert platforms == ["linux-64", "osx-arm64"]
-    for r in results:
-        assert r.error is None
-        assert len(r.packages) > 0
+@pytest.mark.parametrize(
+    "platforms",
+    [
+        pytest.param(["linux-64"], id="single"),
+        pytest.param(["linux-64", "osx-arm64"], id="multi"),
+    ],
+)
+def test_solve(platforms):
+    results = solve(["conda-forge"], ["zlib"], platforms)
+    assert len(results) == len(platforms)
+    for result, platform in zip(results, platforms):
+        assert result.platform == platform
+        assert result.error is None
+        assert len(result.packages) > 0
 
 
 def test_solve_defaults_to_current_platform():
@@ -250,24 +250,21 @@ def test_solve_defaults_to_current_platform():
     assert results[0].platform == context.subdir
 
 
-def test_solve_environments_single():
-    envs = solve_environments(
-        ["conda-forge"], ["zlib"], ["linux-64"]
-    )
-    assert len(envs) == 1
-    assert isinstance(envs[0], Environment)
-    assert envs[0].platform == "linux-64"
-    names = [r.name for r in envs[0].explicit_packages]
-    assert "zlib" in names
-
-
-def test_solve_environments_multi():
-    envs = solve_environments(
-        ["conda-forge"], ["zlib"], ["linux-64", "osx-arm64"]
-    )
-    assert len(envs) == 2
-    platforms = [e.platform for e in envs]
-    assert platforms == ["linux-64", "osx-arm64"]
+@pytest.mark.parametrize(
+    "platforms",
+    [
+        pytest.param(["linux-64"], id="single"),
+        pytest.param(["linux-64", "osx-arm64"], id="multi"),
+    ],
+)
+def test_solve_environments(platforms):
+    envs = solve_environments(["conda-forge"], ["zlib"], platforms)
+    assert len(envs) == len(platforms)
+    for env, platform in zip(envs, platforms):
+        assert isinstance(env, Environment)
+        assert env.platform == platform
+        names = [r.name for r in env.explicit_packages]
+        assert "zlib" in names
 
 
 def test_solve_environments_defaults_to_current():
@@ -278,79 +275,37 @@ def test_solve_environments_defaults_to_current():
     assert envs[0].platform == context.subdir
 
 
-@pytest.mark.parametrize(
-    "deps",
-    [
-        ["zlib"],
-        ["python=3.12", "zlib"],
-    ],
-)
-def test_solve_varying_deps(deps):
-    results = solve(["conda-forge"], deps, ["linux-64"])
-    assert results[0].error is None
-    resolved_names = {p.name for p in results[0].packages}
-    for dep in deps:
-        name = dep.split("=")[0].split(">")[0].split("<")[0].strip()
-        assert name in resolved_names
-
-
-# ---------------------------------------------------------------------------
-# Index cache tests
-# ---------------------------------------------------------------------------
-
-
-def test_index_cache_returns_same_object():
-    """Calling get_or_build_index twice returns the cached instance."""
-    from conda_resolve.resolve import solver_lock
-
-    with solver_lock:
-        configure_platform("linux-64")
-        configure_context()
-        idx1 = get_or_build_index(("conda-forge",), "linux-64")
-        idx2 = get_or_build_index(("conda-forge",), "linux-64")
+@pytest.mark.usefixtures("_warm_index")
+def test_build_index_returns_same_object():
+    """Calling build_index twice returns the same cached instance."""
+    idx1 = build_index(("conda-forge",), "linux-64")
+    idx2 = build_index(("conda-forge",), "linux-64")
     assert idx1 is idx2
 
 
-def test_index_cache_different_platforms():
+@pytest.mark.usefixtures("_warm_index")
+def test_build_index_different_platforms():
     """Different platforms get separate cache entries."""
-    from conda_resolve.resolve import solver_lock
-
-    with solver_lock:
-        configure_platform("linux-64")
-        configure_context()
-        idx_linux = get_or_build_index(("conda-forge",), "linux-64")
-
-        configure_platform("osx-arm64")
-        idx_osx = get_or_build_index(("conda-forge",), "osx-arm64")
-
+    idx_linux = build_index(("conda-forge",), "linux-64")
+    configure_platform("osx-arm64")
+    idx_osx = build_index(("conda-forge",), "osx-arm64")
     assert idx_linux is not idx_osx
+    assert len(index_cache) >= 2
 
 
-def test_index_cache_expires(monkeypatch):
-    """Expired cache entries are rebuilt."""
-    import time as time_mod
-
-    from conda_resolve.resolve import solver_lock
-
-    with solver_lock:
-        configure_platform("linux-64")
-        configure_context()
-        idx1 = get_or_build_index(("conda-forge",), "linux-64")
-
-        key = (("conda-forge",), "linux-64")
-        old_index, _ = index_cache[key]
-        index_cache[key] = (
-            old_index,
-            time_mod.monotonic() - INDEX_TTL_SECONDS - 1,
-        )
-
-        idx2 = get_or_build_index(("conda-forge",), "linux-64")
-
+@pytest.mark.usefixtures("_warm_index")
+def test_clear_index_cache():
+    """clear_index_cache() forces a fresh index on next call."""
+    idx1 = build_index(("conda-forge",), "linux-64")
+    clear_index_cache()
+    assert len(index_cache) == 0
+    idx2 = build_index(("conda-forge",), "linux-64")
     assert idx2 is not idx1
 
 
 def test_cached_solve_produces_correct_results():
     """Two back-to-back solves produce identical results (cache hit)."""
+    clear_index_cache()
     r1 = solve(["conda-forge"], ["zlib"], ["linux-64"])
     r2 = solve(["conda-forge"], ["zlib"], ["linux-64"])
     names1 = [p.name for p in r1[0].packages]

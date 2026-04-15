@@ -41,40 +41,33 @@ async def test_health(client):
 
 
 @pytest.mark.anyio
-async def test_solve_specs_single_platform(client):
+@pytest.mark.parametrize(
+    "platforms",
+    [
+        pytest.param(["linux-64"], id="single"),
+        pytest.param(["linux-64", "osx-arm64"], id="multi"),
+    ],
+)
+async def test_solve_specs(client, platforms):
     resp = await client.post(
         "/solve",
         json={
             "channels": ["conda-forge"],
             "dependencies": ["zlib"],
-            "platforms": ["linux-64"],
+            "platforms": platforms,
         },
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) == 1
-    assert data[0]["platform"] == "linux-64"
-    assert data[0]["error"] is None
-    names = [p["name"] for p in data[0]["packages"]]
-    assert "zlib" in names
-
-
-@pytest.mark.anyio
-async def test_solve_specs_multi_platform(client):
-    resp = await client.post(
-        "/solve",
-        json={
-            "channels": ["conda-forge"],
-            "dependencies": ["zlib"],
-            "platforms": ["linux-64", "osx-arm64"],
-        },
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert len(data) == 2
-    platforms = [r["platform"] for r in data]
-    assert "linux-64" in platforms
-    assert "osx-arm64" in platforms
+    assert len(data) == len(platforms)
+    for result, platform in zip(data, platforms):
+        assert result["platform"] == platform
+        assert result["error"] is None
+        names = [p["name"] for p in result["packages"]]
+        assert "zlib" in names
+        for pkg in result["packages"]:
+            assert pkg["sha256"], f"{pkg['name']} missing sha256"
+            assert pkg["url"], f"{pkg['name']} missing url"
 
 
 @pytest.mark.anyio
@@ -91,6 +84,7 @@ async def test_solve_specs_unsatisfiable(client):
     data = resp.json()
     assert data[0]["error"] is not None
     assert data[0]["packages"] == []
+    assert "/Users/" not in data[0]["error"]
 
 
 @pytest.mark.anyio
@@ -103,22 +97,6 @@ async def test_solve_specs_defaults(client):
     data = resp.json()
     assert len(data) == 1
     assert data[0]["error"] is None
-
-
-@pytest.mark.anyio
-async def test_solve_specs_packages_have_hashes(client):
-    resp = await client.post(
-        "/solve",
-        json={
-            "channels": ["conda-forge"],
-            "dependencies": ["zlib"],
-            "platforms": ["linux-64"],
-        },
-    )
-    data = resp.json()
-    for pkg in data[0]["packages"]:
-        assert pkg["sha256"], f"{pkg['name']} missing sha256"
-        assert pkg["url"], f"{pkg['name']} missing url"
 
 
 @pytest.mark.anyio
@@ -135,28 +113,6 @@ async def test_solve_environment_yml(client, environment_yml_bytes):
     names = [p["name"] for p in data[0]["packages"]]
     assert "python" in names
     assert "numpy" in names
-
-
-@pytest.mark.anyio
-async def test_solve_environment_yml_invalid_yaml(client):
-    resp = await client.post(
-        "/solve/environment-yml",
-        content=b": [invalid yaml {{",
-        headers={"content-type": "application/x-yaml"},
-    )
-    assert resp.status_code == 400
-    assert "Invalid YAML" in resp.json()["error"]
-
-
-@pytest.mark.anyio
-async def test_solve_environment_yml_not_mapping(client):
-    resp = await client.post(
-        "/solve/environment-yml",
-        content=b"- just\n- a\n- list\n",
-        headers={"content-type": "application/x-yaml"},
-    )
-    assert resp.status_code == 400
-    assert "Expected a YAML mapping" in resp.json()["error"]
 
 
 @pytest.mark.anyio
@@ -231,39 +187,49 @@ async def test_solve_specs_invalid_types(client, body):
 
 
 @pytest.mark.anyio
-async def test_solve_specs_body_too_large(client):
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        pytest.param("/solve", id="solve"),
+        pytest.param("/solve/environment-yml", id="env-yml"),
+    ],
+)
+async def test_body_too_large(client, endpoint):
+    content_type = (
+        "application/json" if endpoint == "/solve" else "application/x-yaml"
+    )
     resp = await client.post(
-        "/solve",
+        endpoint,
         content=b"x" * (1_024 * 1_024 + 1),
-        headers={"content-type": "application/json"},
+        headers={"content-type": content_type},
     )
     assert resp.status_code == 413
 
 
 @pytest.mark.anyio
-async def test_solve_environment_yml_body_too_large(client):
+@pytest.mark.parametrize(
+    "body, expected_fragment",
+    [
+        pytest.param(
+            b": [invalid yaml {{", "Invalid YAML", id="invalid-yaml"
+        ),
+        pytest.param(
+            b"- just\n- a\n- list\n",
+            "Expected a YAML mapping",
+            id="not-mapping",
+        ),
+    ],
+)
+async def test_solve_environment_yml_invalid_body(
+    client, body, expected_fragment
+):
     resp = await client.post(
         "/solve/environment-yml",
-        content=b"x" * (1_024 * 1_024 + 1),
+        content=body,
         headers={"content-type": "application/x-yaml"},
     )
-    assert resp.status_code == 413
-
-
-@pytest.mark.anyio
-async def test_solve_specs_error_does_not_leak_internals(client):
-    resp = await client.post(
-        "/solve",
-        json={
-            "channels": ["conda-forge"],
-            "dependencies": ["__nonexistent_package_xyz__"],
-            "platforms": ["linux-64"],
-        },
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data[0]["error"] is not None
-    assert "/Users/" not in data[0]["error"]
+    assert resp.status_code == 400
+    assert expected_fragment in resp.json()["error"]
 
 
 @pytest.mark.anyio
