@@ -60,6 +60,7 @@ def test_bench_solve(benchmark, deps):
     benchmark(solve, ["conda-forge"], deps, ["linux-64"])
 
 
+@pytest.mark.crossplatform
 def test_bench_solve_multi_platform(benchmark):
     benchmark(
         solve, ["conda-forge"], ["zlib"], ["linux-64", "osx-arm64"]

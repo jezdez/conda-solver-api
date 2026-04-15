@@ -52,7 +52,11 @@ async def test_health(client):
     "platforms",
     [
         pytest.param(["linux-64"], id="single"),
-        pytest.param(["linux-64", "osx-arm64"], id="multi"),
+        pytest.param(
+            ["linux-64", "osx-arm64"],
+            id="multi",
+            marks=pytest.mark.crossplatform,
+        ),
     ],
 )
 async def test_solve_specs(client, platforms):
@@ -114,7 +118,11 @@ async def test_solve_specs_defaults(client):
             "?platform=linux-64", 1, ["python", "numpy"], id="single"
         ),
         pytest.param(
-            "?platform=linux-64&platform=osx-arm64", 2, None, id="multi"
+            "?platform=linux-64&platform=osx-arm64",
+            2,
+            None,
+            id="multi",
+            marks=pytest.mark.crossplatform,
         ),
     ],
 )

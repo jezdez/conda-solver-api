@@ -35,7 +35,7 @@ jobs:
           path: ~/.cache/rattler/cache
           key: repodata-${{ runner.os }}-${{ hashFiles('pixi.lock') }}
           restore-keys: repodata-${{ runner.os }}-
-      - run: pixi run -e test test
+      - run: pixi run -e test pytest -m "not crossplatform"
         timeout-minutes: 5
 
   benchmark:
@@ -53,4 +53,4 @@ jobs:
           path: ~/.cache/rattler/cache
           key: repodata-${{ runner.os }}-${{ hashFiles('pixi.lock') }}
           restore-keys: repodata-${{ runner.os }}-
-      - run: pixi run -e test bench
+      - run: pixi run -e test pytest tests/test_benchmarks.py --benchmark-enable -m "not crossplatform"

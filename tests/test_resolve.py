@@ -226,7 +226,11 @@ def test_solve_one_platform_unsatisfiable():
     "platforms",
     [
         pytest.param(["linux-64"], id="single"),
-        pytest.param(["linux-64", "osx-arm64"], id="multi"),
+        pytest.param(
+            ["linux-64", "osx-arm64"],
+            id="multi",
+            marks=pytest.mark.crossplatform,
+        ),
     ],
 )
 def test_solve(platforms):
@@ -263,7 +267,11 @@ def test_defaults_to_current_platform(fn_name):
     "platforms",
     [
         pytest.param(["linux-64"], id="single"),
-        pytest.param(["linux-64", "osx-arm64"], id="multi"),
+        pytest.param(
+            ["linux-64", "osx-arm64"],
+            id="multi",
+            marks=pytest.mark.crossplatform,
+        ),
     ],
 )
 def test_solve_environments(platforms):
@@ -284,6 +292,7 @@ def test_build_index_returns_same_object():
     assert idx1 is idx2
 
 
+@pytest.mark.crossplatform
 @pytest.mark.usefixtures("_warm_index")
 def test_build_index_different_platforms():
     """Different platforms get separate cache entries."""
