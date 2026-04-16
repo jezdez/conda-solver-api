@@ -23,7 +23,7 @@ package lists programmatically.
 - Conda-native CLI flags (`--override-channels`, `--solver`, `--offline`, etc.)
 - HTTP API with JSON input/output (Litestar + uvicorn)
 - Interactive API docs at `/` (Scalar UI) with auto-generated OpenAPI schema
-- Production middleware: gzip compression, CORS, request logging, rate limiting
+- Production middleware: brotli/gzip compression, CORS, request logging, rate limiting
 - Repodata index caching with TTL (300s) for ~50x faster repeat solves
 - Conda plugin: `conda presto` / `conda presto --serve`
 - Uses `conda-rattler-solver` for fast SAT solving

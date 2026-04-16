@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   OpenAPI schema and interactive Scalar API docs served at `/`.
 - Migrated `ResolvedPackage` and `SolveResult` from `dataclasses`
   to `msgspec.Struct` for faster serialization and lower memory.
-- Added production middleware: gzip compression, CORS (configurable
+- Added production middleware: brotli compression with gzip fallback, CORS (configurable
   via `CONDA_PRESTO_CORS_ORIGINS`), structured request logging,
   and rate limiting (configurable via `CONDA_PRESTO_RATE_LIMIT`,
   default 300 req/min).

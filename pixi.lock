@@ -2752,7 +2752,7 @@ packages:
 - pypi: ./
   name: conda-presto
   version: 0.2.1
-  sha256: 4a7eeccf43be4772e3bbe2097249bff022ea4227b7f56c1305d4a08be7b8e4ea
+  sha256: a9e79ff737cb070b794bce4fe95a145f96263ea1427c1816832833ed19b97ed1
   requires_python: '>=3.13'
 - conda: https://conda.anaconda.org/conda-forge/noarch/conda-rattler-solver-0.0.6-pyhcf101f3_0.conda
   sha256: 07f361d11971a8305c64faedcd7546c1c0c67ebb95ff4b37ea2ce53472426151

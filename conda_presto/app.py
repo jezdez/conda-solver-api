@@ -262,7 +262,7 @@ app = Litestar(
         path="/",
     ),
     on_startup=[on_startup],
-    compression_config=CompressionConfig(backend="gzip"),
+    compression_config=CompressionConfig(backend="brotli", brotli_gzip_fallback=True),
     cors_config=CORSConfig(allow_origins=CORS_ORIGINS),
     logging_config=LoggingConfig(
         log_exceptions="always",
