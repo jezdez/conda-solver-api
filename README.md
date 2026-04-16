@@ -298,12 +298,12 @@ cache, solving against `conda-forge`:
 
 | Scenario | Mean | Min | Max |
 |---|---:|---:|---:|
-| zlib, 1 platform | 1.2 s | 1.2 s | 1.2 s |
-| zlib, 3 platforms | 1.5 s | 1.5 s | 1.6 s |
-| py+scipy+pandas+matplotlib, 1 platform | 1.7 s | 1.7 s | 1.8 s |
-| py+scipy+pandas+matplotlib, 3 platforms | 2.0 s | 2.0 s | 2.1 s |
-| py+torch+transformers+sklearn (11 pkgs), 1 platform | 4.5 s | 4.4 s | 4.5 s |
-| py+torch+transformers+sklearn (11 pkgs), 3 platforms | 5.2 s | 5.1 s | 5.3 s |
+| zlib, 1 platform | 1.0 s | 1.0 s | 1.1 s |
+| zlib, 3 platforms | 1.4 s | 1.3 s | 1.5 s |
+| py+scipy+pandas+matplotlib, 1 platform | 1.5 s | 1.4 s | 1.5 s |
+| py+scipy+pandas+matplotlib, 3 platforms | 1.8 s | 1.8 s | 1.9 s |
+| py+pytorch+transformers+sklearn (11 pkgs), 1 platform | 4.0 s | 3.8 s | 4.2 s |
+| py+pytorch+transformers+sklearn (11 pkgs), 3 platforms | 4.6 s | 4.4 s | 4.9 s |
 
 Times include Python startup (~50 ms), pixi overhead (~50 ms), and
 conda import (~200 ms). Multi-platform solves run in parallel and
@@ -315,11 +315,11 @@ With a warm index cache, solves are dominated by SAT time only:
 
 | Operation | Time |
 |---|---|
-| Single-platform solve (`zlib`) | ~17 ms |
-| Single-platform solve (`python=3.12, numpy`) | ~106 ms |
-| `ResolvedPackage.from_record` (single) | 2.5 µs |
-| `ResolvedPackage.to_dict` (single) | 293 ns |
-| `SolveResult.to_dict` (100 packages) | 23 µs |
+| Single-platform solve (`zlib`) | ~15 ms |
+| Single-platform solve (`python=3.12, numpy`) | ~96 ms |
+| `ResolvedPackage.from_record` (single) | 2.1 µs |
+| `ResolvedPackage.to_dict` (single) | 284 ns |
+| `SolveResult.to_dict` (100 packages) | 22 µs |
 
 Run benchmarks:
 
