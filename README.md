@@ -207,6 +207,17 @@ objects only, any solver failure on the `?format=` path returns HTTP
 500 instead of a partial response — use the default (no `format` query
 param) when you want per-platform error details.
 
+Pipeline-style: `environment.yml` → remote solve → `pixi.lock` → local
+`conda env create`, with `jq -Rs` JSON-encoding the file body:
+
+```bash
+jq -Rs '{file: ., platforms: ["linux-64"]}' environment.yml \
+  | curl -sS -X POST 'http://localhost:8000/resolve?format=pixi-lock-v6' \
+         -H 'Content-Type: application/json' --data-binary @- \
+  > pixi.lock
+conda env create -n demo -f pixi.lock
+```
+
 ### `GET /health`
 
 Returns `{"status": "ok"}`.
