@@ -5,21 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-04-16
+
+### Added
+
+- Interactive API documentation (Scalar UI) at `/` with auto-generated
+  OpenAPI 3.1 schema at `/openapi.json`, replacing the hand-written
+  ~190-line schema dictionary.
+- Production middleware: brotli compression with gzip fallback,
+  CORS (configurable via `CONDA_PRESTO_CORS_ORIGINS`, default `*`),
+  structured request logging, and rate limiting (configurable via
+  `CONDA_PRESTO_RATE_LIMIT`, default 300 req/min, `0` to disable).
+- New environment variables: `CONDA_PRESTO_RATE_LIMIT`,
+  `CONDA_PRESTO_CORS_ORIGINS`, `CONDA_PRESTO_LOG_LEVEL`.
+- Native request body size enforcement via Litestar's
+  `request_max_body_size` (configurable via
+  `CONDA_PRESTO_MAX_BODY_BYTES`, default 1 MB).
 
 ### Changed
 
-- Migrated HTTP API from Starlette to Litestar. Auto-generated
-  OpenAPI schema and interactive Scalar API docs served at `/`.
+- Migrated HTTP API framework from Starlette to Litestar. Typed
+  request validation via `ResolveRequest` dataclass replaces manual
+  JSON parsing.
 - Migrated `ResolvedPackage` and `SolveResult` from `dataclasses`
   to `msgspec.Struct` for faster serialization and lower memory.
-- Added production middleware: brotli compression with gzip fallback, CORS (configurable
-  via `CONDA_PRESTO_CORS_ORIGINS`), structured request logging,
-  and rate limiting (configurable via `CONDA_PRESTO_RATE_LIMIT`,
-  default 300 req/min).
-- Application log level configurable via `CONDA_PRESTO_LOG_LEVEL`.
+  Litestar encodes these natively to JSON without intermediate dicts.
 - Startup initialization uses Litestar's `on_startup` hook with
   `app.state` instead of module-level globals.
+- Application log level configurable via `CONDA_PRESTO_LOG_LEVEL`
+  (default `INFO`).
+- Renamed project from `conda-resolve` to `conda-presto`
+  (package, CLI subcommand, environment variables, Docker images).
 
 ## [0.2.1] - 2026-04-16
 
@@ -138,6 +154,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependabot configuration for GitHub Actions version updates.
 - BSD 3-Clause license.
 
+[0.3.0]: https://github.com/jezdez/conda-presto/releases/tag/v0.3.0
 [0.2.1]: https://github.com/jezdez/conda-presto/releases/tag/v0.2.1
 [0.2.0]: https://github.com/jezdez/conda-presto/releases/tag/v0.2.0
 [0.1.1]: https://github.com/jezdez/conda-presto/releases/tag/v0.1.1
