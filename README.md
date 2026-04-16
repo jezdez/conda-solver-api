@@ -1,14 +1,17 @@
 # conda-presto
 
 A fast, dry-run conda solver exposed as both a CLI and an HTTP API.
-Given package specs or an `environment.yml`, it resolves fully pinned
-packages (with SHA256 hashes, URLs, and dependency metadata) for one
-or more platforms — without downloading or installing anything.
+Given package specs or an environment file (`environment.yml`,
+`pixi.toml`, `pyproject.toml`, `requirements.txt`, conda-lock,
+pixi-lock, …), it resolves fully pinned packages for one or more
+platforms — without downloading or installing anything — and emits
+the result as native JSON or any conda exporter format
+(`pixi.lock`, `conda-lock.yml`, environment YAML, explicit file, …).
 
 It registers as a conda subcommand plugin (`conda presto`) and
 can also run as a standalone HTTP service for integration into
-CI pipelines, security scanners, or other tooling that needs resolved
-package lists programmatically.
+CI pipelines, security scanners, lockfile-conversion workflows, or
+other tooling that needs resolved package lists programmatically.
 
 ## Features
 
