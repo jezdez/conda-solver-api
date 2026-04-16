@@ -37,9 +37,9 @@ import logging
 import threading
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
 from operator import attrgetter
 
+import msgspec
 from conda.base.context import context
 from conda.exceptions import PackagesNotFoundError, UnsatisfiableError
 from conda.models.environment import Environment
@@ -98,13 +98,13 @@ def configure_platform(platform: str):
     current_platform = platform
 
 
-@dataclass(slots=True)
-class ResolvedPackage:
+class ResolvedPackage(msgspec.Struct):
     """A single resolved package with its metadata.
 
-    Uses ``slots=True`` to eliminate per-instance ``__dict__`` overhead
-    (~200 bytes saved per instance).  ``depends`` and ``constrains`` are
-    stored as tuples (immutable, no over-allocation for growth).
+    ``msgspec.Struct`` provides lower memory usage than ``dataclasses``
+    and native JSON encoding in Litestar without intermediate dicts.
+    ``depends`` and ``constrains`` are stored as tuples (immutable, no
+    over-allocation for growth).
     """
 
     name: str
@@ -144,11 +144,10 @@ class ResolvedPackage:
         )
 
     def to_dict(self) -> dict:
-        """Serialize to a plain dict for JSON output.
+        """Serialize to a plain dict for JSON/CLI output.
 
-        Hand-written instead of ``dataclasses.asdict()`` to avoid its
-        recursive deep-copy, which creates hundreds of temporary
-        objects for a typical solve result.
+        Used by the CLI and exporter paths. The HTTP API bypasses this
+        via Litestar's native msgspec encoding.
         """
         return {
             "name": self.name,
@@ -166,8 +165,7 @@ class ResolvedPackage:
         }
 
 
-@dataclass(slots=True)
-class SolveResult:
+class SolveResult(msgspec.Struct):
     """The result of a solve operation for a single platform.
 
     On solver failure, ``packages`` is empty and ``error`` contains a
@@ -179,7 +177,7 @@ class SolveResult:
     error: str | None = None
 
     def to_dict(self) -> dict:
-        """Serialize to a plain dict for JSON output."""
+        """Serialize to a plain dict for JSON/CLI output."""
         return {
             "platform": self.platform,
             "packages": [p.to_dict() for p in self.packages],

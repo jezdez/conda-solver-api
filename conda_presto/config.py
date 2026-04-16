@@ -23,6 +23,15 @@ Server tuning:
     ``CONDA_PRESTO_PORT``
         Default port for ``--serve`` (default: ``8000``).
 
+HTTP middleware:
+    ``CONDA_PRESTO_RATE_LIMIT``
+        Max requests per minute per client (default: ``300``).
+        Set to ``0`` to disable rate limiting.
+    ``CONDA_PRESTO_CORS_ORIGINS``
+        Comma-separated allowed CORS origins (default: ``*``).
+    ``CONDA_PRESTO_LOG_LEVEL``
+        Application log level (default: ``INFO``).
+
 Cross-platform virtual packages:
     ``CONDA_PRESTO_GLIBC_VERSION``
         Virtual ``__glibc`` version for Linux solves (default: ``2.17``).
@@ -62,3 +71,7 @@ OSX_VERSION = os.environ.get("CONDA_PRESTO_OSX_VERSION", "11.0")
 
 DEFAULT_HOST = os.environ.get("CONDA_PRESTO_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("CONDA_PRESTO_PORT", 8000))
+
+RATE_LIMIT = int(os.environ.get("CONDA_PRESTO_RATE_LIMIT", 300))
+CORS_ORIGINS = os.environ.get("CONDA_PRESTO_CORS_ORIGINS", "*").split(",")
+LOG_LEVEL = os.environ.get("CONDA_PRESTO_LOG_LEVEL", "INFO")

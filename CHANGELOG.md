@@ -5,14 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Migrated HTTP API from Starlette to Litestar. Auto-generated
+  OpenAPI schema and interactive Scalar API docs served at `/`.
+- Migrated `ResolvedPackage` and `SolveResult` from `dataclasses`
+  to `msgspec.Struct` for faster serialization and lower memory.
+- Added production middleware: gzip compression, CORS (configurable
+  via `CONDA_PRESTO_CORS_ORIGINS`), structured request logging,
+  and rate limiting (configurable via `CONDA_PRESTO_RATE_LIMIT`,
+  default 300 req/min).
+- Application log level configurable via `CONDA_PRESTO_LOG_LEVEL`.
+- Startup initialization uses Litestar's `on_startup` hook with
+  `app.state` instead of module-level globals.
+
 ## [0.2.1] - 2026-04-16
 
 ### Added
 
 - Separate Docker image flavors: server (`latest`) and CLI (`cli`),
   built from `docker/server.Dockerfile` and `docker/cli.Dockerfile`.
-  The CLI image excludes server dependencies (starlette, uvicorn) for
-  a smaller footprint.
+  The CLI image excludes server dependencies (uvicorn) for a smaller
+  footprint.
 
 ## [0.2.0] - 2026-04-16
 

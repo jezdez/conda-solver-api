@@ -21,7 +21,9 @@ package lists programmatically.
 - Multiple output formats via conda exporter plugins (`--format`)
 - Multiple `--file` inputs merged into a single solve
 - Conda-native CLI flags (`--override-channels`, `--solver`, `--offline`, etc.)
-- HTTP API with JSON input/output (Starlette + uvicorn)
+- HTTP API with JSON input/output (Litestar + uvicorn)
+- Interactive API docs at `/` (Scalar UI) with auto-generated OpenAPI schema
+- Production middleware: gzip compression, CORS, request logging, rate limiting
 - Repodata index caching with TTL (300s) for ~50x faster repeat solves
 - Conda plugin: `conda presto` / `conda presto --serve`
 - Uses `conda-rattler-solver` for fast SAT solving
@@ -150,9 +152,10 @@ the CLI's `resolve-json` format.
 
 Returns `{"status": "ok"}`.
 
-### `GET /openapi.json`
+### `GET /`
 
-Returns the OpenAPI 3.1 schema describing all endpoints.
+Interactive API documentation (Scalar UI). The raw OpenAPI 3.1
+schema is available at `/openapi.json`.
 
 ## Docker
 
@@ -248,6 +251,9 @@ default channels and platforms (see environment variables below).
 | `CONDA_PRESTO_MAX_BODY_BYTES` | `1048576` (1 MB) | Maximum allowed request body size in bytes. |
 | `CONDA_PRESTO_HOST` | `127.0.0.1` | Default bind address for `--serve` / `--host`. |
 | `CONDA_PRESTO_PORT` | `8000` | Default port for `--serve` / `--port`. |
+| `CONDA_PRESTO_RATE_LIMIT` | `300` | Max requests per minute per client. Set to `0` to disable. |
+| `CONDA_PRESTO_CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins. |
+| `CONDA_PRESTO_LOG_LEVEL` | `INFO` | Application log level. |
 | `CONDA_PRESTO_GLIBC_VERSION` | `2.17` | Virtual `__glibc` version for cross-platform Linux solves. |
 | `CONDA_PRESTO_LINUX_VERSION` | `5.15` | Virtual `__linux` version for cross-platform Linux solves. |
 | `CONDA_PRESTO_OSX_VERSION` | `11.0` | Virtual `__osx` version for cross-platform macOS solves. |

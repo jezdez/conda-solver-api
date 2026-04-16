@@ -52,6 +52,7 @@ python = ">=3.13,<3.14"
 conda = ">=25.3"
 conda-rattler-solver = ">=0.0.6,<0.0.7"
 pyyaml = ">=6.0"
+msgspec = ">=0.19"
 
 [tool.pixi.pypi-dependencies]
 conda-presto = { path = ".", editable = true }
@@ -67,7 +68,7 @@ httpx = ">=0.28"
 anyio = ">=4.0"
 
 [tool.pixi.feature.server.dependencies]
-starlette = ">=0.46"
+litestar = ">=2.18"
 uvicorn = ">=0.34"
 
 [tool.pixi.environments]
