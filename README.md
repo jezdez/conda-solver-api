@@ -12,7 +12,8 @@ package lists programmatically.
 
 ## Features
 
-- Resolve inline specs or `environment.yml` files
+- Resolve inline specs or environment files (`.yml`, `.yaml`, `.txt`,
+  `.lock`, `.toml`, `.json`)
 - Full package metadata by default: sha256, md5, urls, sizes, depends
 - Cross-platform solving (e.g. solve for `linux-64` from macOS) with
   automatic virtual package injection (`__glibc`, `__linux`, `__osx`)
@@ -113,30 +114,45 @@ conda resolve --serve
 # or: uvicorn conda_resolve.app:app
 ```
 
-### `POST /solve`
+### `GET /resolve`
+
+Resolve inline specs via query params:
 
 ```bash
-curl -X POST http://localhost:8000/solve \
-  -H 'Content-Type: application/json' \
-  -d '{"channels": ["conda-forge"], "dependencies": ["python=3.12", "numpy"], "platforms": ["linux-64"]}'
+curl 'http://localhost:8000/resolve?spec=python=3.12&spec=numpy&channel=conda-forge&platform=linux-64'
 ```
+
+### `POST /resolve`
+
+Resolve specs and/or file content via JSON body:
+
+```bash
+curl -X POST http://localhost:8000/resolve \
+  -H 'Content-Type: application/json' \
+  -d '{"specs": ["python=3.12", "numpy"], "channels": ["conda-forge"], "platforms": ["linux-64"]}'
+```
+
+Send environment file content:
+
+```bash
+curl -X POST http://localhost:8000/resolve \
+  -H 'Content-Type: application/json' \
+  -d '{"file": "name: env\nchannels:\n  - conda-forge\ndependencies:\n  - scipy\n", "platforms": ["linux-64"]}'
+```
+
+Query params (`spec`, `channel`, `platform`) work on both GET and POST.
+Body fields override query params when both are present.
 
 Returns a JSON array with one entry per platform, same structure as
 the CLI's `resolve-json` format.
 
-### `POST /solve/environment-yml`
-
-Send the YAML as the request body, specify platforms via query params:
-
-```bash
-curl -X POST 'http://localhost:8000/solve/environment-yml?platform=linux-64' \
-  -H 'Content-Type: application/x-yaml' \
-  --data-binary @environment.yml
-```
-
 ### `GET /health`
 
 Returns `{"status": "ok"}`.
+
+### `GET /openapi.json`
+
+Returns the OpenAPI 3.1 schema describing all endpoints.
 
 ## Docker
 
@@ -175,9 +191,9 @@ Subsequent solves use the in-memory cache and return in milliseconds.
 Multi-platform solve example:
 
 ```bash
-curl -X POST http://localhost:8000/solve \
+curl -X POST http://localhost:8000/resolve \
   -H 'Content-Type: application/json' \
-  -d '{"dependencies": ["python=3.13"], "platforms": ["linux-64", "osx-arm64"]}'
+  -d '{"specs": ["python=3.13"], "platforms": ["linux-64", "osx-arm64"]}'
 ```
 
 ## Development
@@ -200,10 +216,27 @@ The solver caches `RattlerIndexHelper` objects keyed by
 repeat solves for the same channels/platform hit the cache and only
 pay the SAT solving time (~20-100 ms).
 
-The server pre-warms these caches on startup for `conda-forge` across
-`linux-64`, `osx-arm64`, and `osx-64`.
+The server pre-warms these caches on startup for the configured
+default channels and platforms (see environment variables below).
 
 ### Environment variables
+
+#### Application
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CONDA_RESOLVE_CHANNELS` | `conda-forge` | Comma-separated default channels when none are specified in a request. Also used for cache warmup. |
+| `CONDA_RESOLVE_PLATFORMS` | `linux-64,osx-arm64,osx-64` | Comma-separated platforms to pre-warm repodata caches for on startup. |
+| `CONDA_RESOLVE_CONCURRENCY` | `4` | Maximum concurrent solve requests (thread limiter). |
+| `CONDA_RESOLVE_WORKERS` | `min(4, cpu_count)` | Process pool size for multi-platform parallel solves. |
+| `CONDA_RESOLVE_MAX_BODY_BYTES` | `1048576` (1 MB) | Maximum allowed request body size in bytes. |
+| `CONDA_RESOLVE_HOST` | `127.0.0.1` | Default bind address for `--serve` / `--host`. |
+| `CONDA_RESOLVE_PORT` | `8000` | Default port for `--serve` / `--port`. |
+| `CONDA_RESOLVE_GLIBC_VERSION` | `2.17` | Virtual `__glibc` version for cross-platform Linux solves. |
+| `CONDA_RESOLVE_LINUX_VERSION` | `5.15` | Virtual `__linux` version for cross-platform Linux solves. |
+| `CONDA_RESOLVE_OSX_VERSION` | `11.0` | Virtual `__osx` version for cross-platform macOS solves. |
+
+#### Conda tuning
 
 The following conda environment variables are set via pixi activation
 to optimize for a solve-only workload:
@@ -224,13 +257,14 @@ to optimize for a solve-only workload:
 When solving for a foreign platform (e.g. `linux-64` from macOS),
 conda needs virtual packages (`__glibc`, `__linux`, `__osx`) to be
 present for the target platform. The solver automatically injects
-conservative defaults via `context.override_virtual_packages`:
+defaults via `context.override_virtual_packages`:
 
-- **linux**: `__glibc=2.17` (conda-forge baseline), `__linux=5.15`
-- **osx**: `__osx=11.0` (Big Sur, conda-forge arm64 baseline)
+- **linux**: `__glibc` (default `2.17`, conda-forge baseline), `__linux` (default `5.15`)
+- **osx**: `__osx` (default `11.0`, Big Sur, conda-forge arm64 baseline)
 
-Override these by setting `CONDA_OVERRIDE_*` environment variables
-or via `.condarc` `override_virtual_packages`.
+Override these via `CONDA_RESOLVE_GLIBC_VERSION`,
+`CONDA_RESOLVE_LINUX_VERSION`, and `CONDA_RESOLVE_OSX_VERSION`
+(see the application environment variables table above).
 
 ## Benchmarks
 

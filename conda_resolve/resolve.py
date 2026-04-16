@@ -34,7 +34,6 @@ Security notes:
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -47,19 +46,17 @@ from conda.models.environment import Environment
 from conda.models.match_spec import MatchSpec
 from conda.models.records import PackageRecord
 
+from .config import GLIBC_VERSION, LINUX_VERSION, MAX_WORKERS, OSX_VERSION
+
 log = logging.getLogger(__name__)
 
 # Virtual package overrides for cross-platform solving.
 # Keyed by platform prefix → {package_name: version}.
-# These are set on context.override_virtual_packages so the
-# virtual_packages plugins produce the right __glibc/__linux/__osx
-# records for the target platform instead of the host.
-#
-# glibc 2.17 matches conda-forge's compilation baseline — every
-# conda-forge package is built to work with glibc ≥ 2.17.
+# Versions are configurable via CONDA_RESOLVE_GLIBC_VERSION,
+# CONDA_RESOLVE_LINUX_VERSION, and CONDA_RESOLVE_OSX_VERSION.
 VIRTUAL_PACKAGES: dict[str, dict[str, str]] = {
-    "linux": {"glibc": "2.17", "linux": "5.15"},
-    "osx": {"osx": "11.0"},
+    "linux": {"glibc": GLIBC_VERSION, "linux": LINUX_VERSION},
+    "osx": {"osx": OSX_VERSION},
 }
 
 NATIVE_SUBDIR: str = context.subdir
@@ -440,17 +437,15 @@ def get_process_pool() -> ProcessPoolExecutor:
     in-memory SubdirData and solver index caches accumulate, making
     repeated solves faster.
 
-    ``max_workers`` is capped at 4 or the CPU count, whichever is
-    smaller — 4 is enough for the common 3-platform case and avoids
-    over-subscribing on smaller machines.
+    ``max_workers`` defaults to ``min(4, cpu_count)`` and can be
+    overridden via ``CONDA_RESOLVE_WORKERS``.
     """
     global process_pool
     if process_pool is not None:
         return process_pool
     with pool_lock:
         if process_pool is None:
-            workers = min(4, os.cpu_count() or 4)
-            process_pool = ProcessPoolExecutor(max_workers=workers)
+            process_pool = ProcessPoolExecutor(max_workers=MAX_WORKERS)
         return process_pool
 
 

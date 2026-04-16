@@ -9,7 +9,12 @@ includes full package metadata (sha256, urls, sizes, etc.).  Use
 ``--format`` to select other conda exporter formats (explicit, yaml).
 
 Resolve is the default action.  Use ``--serve`` to start the HTTP API
-server instead.
+server instead.  The ``--host`` and ``--port`` defaults can be set via
+``CONDA_RESOLVE_HOST`` and ``CONDA_RESOLVE_PORT`` environment variables
+(see :mod:`conda_resolve.config`).
+
+When no channels are provided via ``-c`` or environment files, the CLI
+falls back to ``CONDA_RESOLVE_CHANNELS`` (default: ``conda-forge``).
 """
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ from conda.cli.helpers import (
 )
 from conda.models.environment import Environment
 
+from .config import DEFAULT_CHANNELS, DEFAULT_HOST, DEFAULT_PORT
 from .resolve import solve_environments
 
 DEFAULT_FORMAT = "resolve-json"
@@ -78,10 +84,10 @@ def configure_parser(parser: argparse.ArgumentParser):
         help="Start the HTTP API server instead of resolving.",
     )
     server_group.add_argument(
-        "--host", default="127.0.0.1", help="Server bind address."
+        "--host", default=DEFAULT_HOST, help="Server bind address."
     )
     server_group.add_argument(
-        "--port", type=int, default=8000, help="Server port."
+        "--port", type=int, default=DEFAULT_PORT, help="Server port."
     )
 
     parser.add_argument(
@@ -162,7 +168,7 @@ def cmd_solve(args: argparse.Namespace):
 
     channels = list(context.channels)
     if not channels or channels == ["defaults"]:
-        channels = file_channels or channels
+        channels = file_channels or list(DEFAULT_CHANNELS)
 
     envs = solve_environments(channels, deps, args.platforms or None)
 

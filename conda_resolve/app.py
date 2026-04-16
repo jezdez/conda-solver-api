@@ -2,20 +2,30 @@
 
 Endpoints:
 
-- ``POST /solve`` — accepts JSON with channels, dependencies, platforms
-- ``POST /solve/environment-yml`` — accepts raw YAML body
+- ``GET /resolve`` — resolve specs via query params
+- ``POST /resolve`` — resolve specs and/or file content via JSON body
 - ``GET /health`` — returns ``{"status": "ok"}``
-- ``POST /cache/clear`` — drops all cached repodata indexes
+- ``GET /openapi.json`` — OpenAPI 3.1 schema
+
+Configuration is loaded from environment variables via
+:mod:`conda_resolve.config`.  See that module for the full list of
+``CONDA_RESOLVE_*`` settings (default channels, concurrency limits,
+body size cap, etc.).
 
 Security design:
-    - All request bodies are capped at 1 MB to prevent memory exhaustion.
-    - JSON input is validated for correct types before processing.
+    - Request bodies are capped at ``MAX_BODY_BYTES`` (configurable via
+      ``CONDA_RESOLVE_MAX_BODY_BYTES``, default 1 MB).
+    - File content is written to a temp file with a whitelisted extension
+      and processed through conda's env spec plugin system (same as CLI).
+    - Path traversal is prevented by stripping directory components from
+      the client-provided filename.
     - Solver errors are logged server-side but only a generic message
       is returned to the client (no stack traces or file paths).
 
 Performance design:
     - All solve calls run off the event loop via ``anyio.to_thread``
-      so the server stays responsive during long solves.
+      with a concurrency limit of ``MAX_CONCURRENCY`` (configurable via
+      ``CONDA_RESOLVE_CONCURRENCY``).
     - The lifespan handler pre-warms repodata caches (also off the
       event loop) so the first request doesn't pay cold-start costs.
 """
@@ -23,192 +33,174 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from contextlib import asynccontextmanager
+from importlib.metadata import version as pkg_version
 
 import anyio
-import yaml
+from conda.base.context import context
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .resolve import clear_index_cache, index_cache, solve, warmup
+from .config import DEFAULT_CHANNELS, DEFAULT_PLATFORMS, MAX_BODY_BYTES, MAX_CONCURRENCY
+from .resolve import solve, warmup
 
 solver_limiter: anyio.CapacityLimiter | None = None
 
 log = logging.getLogger(__name__)
 
-WARMUP_CHANNELS = ["conda-forge"]
-WARMUP_PLATFORMS = ["linux-64", "osx-arm64", "osx-64"]
-
-# 1 MB — generous for any environment.yml or JSON spec payload;
-# prevents a malicious client from exhausting server memory.
-MAX_BODY_BYTES = 1_024 * 1_024
+ALLOWED_EXTENSIONS = {".yml", ".yaml", ".txt", ".lock", ".toml", ".json"}
 
 
-async def _read_body(
-    request: Request, limit: int = MAX_BODY_BYTES
-) -> bytes:
-    """Read the request body, rejecting payloads over *limit* bytes.
+def parse_file_content(
+    content: str,
+    filename: str | None = None,
+) -> tuple[list[str], list[str]]:
+    """Parse file content through conda's env spec plugin system.
 
-    Checks both the ``Content-Length`` header (fast reject before
-    reading) and the actual body length (defense against missing or
-    spoofed headers).
+    Writes *content* to a temp file and runs it through
+    ``detect_environment_specifier``, the same codepath the CLI uses.
+    Returns ``(specs, channels)``.
+
+    The *filename* controls which parser conda selects (via extension).
+    Only extensions in ``ALLOWED_EXTENSIONS`` are accepted.  Directory
+    components are stripped to prevent path traversal.
     """
-    content_length = request.headers.get("content-length")
-    if content_length is not None:
+    filename = os.path.basename(filename or "environment.yml")
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise ValueError(
+            f"Unsupported file extension '{ext}', "
+            f"allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+        )
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=ext, delete=True
+    ) as tmp:
+        tmp.write(content)
+        tmp.flush()
+
+        spec_plugin = context.plugin_manager.detect_environment_specifier(
+            tmp.name
+        )
+        spec = spec_plugin.environment_spec(filename=tmp.name)
+        if not spec.can_handle():
+            raise ValueError(
+                f"No conda environment spec plugin can handle "
+                f"this file format ({ext})"
+            )
+        env = spec.env
+
+    specs = [str(s) for s in env.requested_packages]
+    channels: list[str] = []
+    if env.config and env.config.channels:
+        channels.extend(env.config.channels)
+    return specs, channels
+
+
+async def resolve(request: Request) -> JSONResponse:
+    """``GET|POST /resolve`` — resolve package specs to pinned packages.
+
+    GET uses query params (``spec``, ``channel``, ``platform``).
+    POST accepts a JSON body with ``specs``, ``file``, ``filename``,
+    ``channels``, and ``platforms``.  Body fields override query params.
+    """
+    specs = request.query_params.getlist("spec")
+    channels = request.query_params.getlist("channel")
+    platforms = request.query_params.getlist("platform")
+    file_content = None
+    filename = None
+
+    if request.method == "POST":
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                if int(content_length) > MAX_BODY_BYTES:
+                    return JSONResponse(
+                        {"error": "Request body too large"}, status_code=413
+                    )
+            except (ValueError, OverflowError):
+                return JSONResponse(
+                    {"error": "Invalid Content-Length header"},
+                    status_code=413,
+                )
+        raw = await request.body()
+        if len(raw) > MAX_BODY_BYTES:
+            return JSONResponse(
+                {"error": "Request body too large"}, status_code=413
+            )
+
         try:
-            if int(content_length) > limit:
-                raise ValueError("Request body too large")
-        except (ValueError, OverflowError):
-            raise ValueError("Invalid Content-Length header")
-    body = await request.body()
-    if len(body) > limit:
-        raise ValueError("Request body too large")
-    return body
+            body = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            return JSONResponse(
+                {"error": f"Invalid JSON: {exc}"}, status_code=400
+            )
 
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"error": "Expected a JSON object"}, status_code=400
+            )
 
-def _validate_solve_body(
-    body: dict,
-) -> tuple[list[str], list[str], list[str]]:
-    """Extract and validate channels/dependencies/platforms from JSON.
+        for field in ("specs", "channels", "platforms"):
+            val = body.get(field)
+            if val is not None:
+                if not isinstance(val, list) or not all(
+                    isinstance(v, str) for v in val
+                ):
+                    return JSONResponse(
+                        {"error": f"'{field}' must be a list of strings"},
+                        status_code=400,
+                    )
 
-    Rejects non-string values to prevent type confusion errors
-    deep in the solver.  Returns ``(channels, dependencies, platforms)``.
-    """
-    channels = body.get("channels", ["defaults"])
-    dependencies = body.get("dependencies", [])
-    platforms = body.get("platforms", [])
+        specs = body.get("specs", specs)
+        channels = body.get("channels", channels)
+        platforms = body.get("platforms", platforms)
+        file_content = body.get("file")
+        filename = body.get("filename")
 
-    if not isinstance(channels, list) or not all(
-        isinstance(c, str) for c in channels
-    ):
-        raise ValueError("'channels' must be a list of strings")
-    if not isinstance(dependencies, list) or not all(
-        isinstance(d, str) for d in dependencies
-    ):
-        raise ValueError("'dependencies' must be a list of strings")
-    if not isinstance(platforms, list) or not all(
-        isinstance(p, str) for p in platforms
-    ):
-        raise ValueError("'platforms' must be a list of strings")
+        if file_content is not None and not isinstance(file_content, str):
+            return JSONResponse(
+                {"error": "'file' must be a string"}, status_code=400
+            )
 
-    return channels, dependencies, platforms
+    if file_content is not None:
+        try:
+            file_specs, file_channels = parse_file_content(
+                file_content, filename
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        specs = list(specs) + file_specs
+        if not channels:
+            channels = file_channels
 
-
-def _parse_environment_yml(
-    source: str | bytes,
-    *,
-    platforms: list[str] | None = None,
-) -> tuple[list[str], list[str], list[str]]:
-    """Parse an environment.yml into ``(channels, dependencies, platforms)``.
-
-    Only conda dependencies (plain strings) are extracted; pip
-    sub-dicts are silently skipped.  Uses ``yaml.safe_load`` to
-    prevent arbitrary code execution from untrusted input.
-    """
-    try:
-        data = yaml.safe_load(source)
-    except yaml.YAMLError as exc:
-        raise ValueError(f"Invalid YAML: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ValueError("Expected a YAML mapping")
-
-    deps = data.get("dependencies", [])
-    conda_deps = [d for d in deps if isinstance(d, str)]
-    raw_channels = data.get("channels", ["defaults"])
-    if not isinstance(raw_channels, list) or not all(
-        isinstance(c, str) for c in raw_channels
-    ):
-        raise ValueError("'channels' must be a list of strings")
-
-    return raw_channels, conda_deps, platforms or []
-
-
-def _solve_and_serialize(
-    channels: list[str],
-    dependencies: list[str],
-    platforms: list[str] | None,
-) -> list[dict]:
-    """Run solve and serialize results in one shot.
-
-    Both the solve and the to_dict() serialization are CPU work that
-    should stay off the event loop.
-    """
-    results = solve(channels, dependencies, platforms)
-    return [r.to_dict() for r in results]
-
-
-async def _run_solve(
-    channels: list[str],
-    dependencies: list[str],
-    platforms: list[str] | None,
-) -> list[dict]:
-    """Run solve off the event loop so other requests aren't blocked.
-
-    Without this, a multi-second solve would starve all concurrent
-    connections including health checks.
-    """
-    return await anyio.to_thread.run_sync(
-        lambda: _solve_and_serialize(channels, dependencies, platforms),
-        limiter=solver_limiter,
-        abandon_on_cancel=True,
-    )
-
-
-async def solve_specs(request: Request) -> JSONResponse:
-    """``POST /solve`` — resolve package specs to pinned packages."""
-    try:
-        raw = await _read_body(request)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=413)
-
-    try:
-        body = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    if not specs:
         return JSONResponse(
-            {"error": f"Invalid JSON: {exc}"}, status_code=400
+            {"error": "Provide specs or file content"}, status_code=400
         )
 
-    try:
-        channels, dependencies, platforms = _validate_solve_body(body)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
+    if not channels:
+        channels = list(DEFAULT_CHANNELS)
 
     try:
-        output = await _run_solve(channels, dependencies, platforms or None)
-    except Exception:
-        log.exception("Solve failed")
-        return JSONResponse(
-            {"error": "Internal solver error"}, status_code=500
-        )
-    return JSONResponse(output)
-
-
-async def solve_environment_yml(request: Request) -> JSONResponse:
-    """``POST /solve/environment-yml`` — resolve from YAML body."""
-    try:
-        body = await _read_body(request)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=413)
-
-    query_platforms = request.query_params.getlist("platform")
-    try:
-        channels, dependencies, platforms = _parse_environment_yml(
-            body, platforms=query_platforms or None
-        )
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    try:
-        output = await _run_solve(
-            channels, dependencies, platforms or None
+        results = await anyio.to_thread.run_sync(
+            lambda: [
+                r.to_dict()
+                for r in solve(channels, specs, platforms or None)
+            ],
+            limiter=solver_limiter,
+            abandon_on_cancel=True,
         )
     except Exception:
         log.exception("Solve failed")
         return JSONResponse(
             {"error": "Internal solver error"}, status_code=500
         )
-    return JSONResponse(output)
+    return JSONResponse(results)
 
 
 async def health(request: Request) -> JSONResponse:
@@ -216,29 +208,217 @@ async def health(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-async def cache_clear(request: Request) -> JSONResponse:
-    """``POST /cache/clear`` — drop all cached repodata indexes."""
-    count = len(index_cache)
-    clear_index_cache()
-    return JSONResponse({"cleared": count})
+OPENAPI_SCHEMA = {
+    "openapi": "3.1.0",
+    "info": {
+        "title": "conda-resolve",
+        "version": pkg_version("conda-resolve"),
+        "description": "Fast dry-run conda solver HTTP API.",
+    },
+    "paths": {
+        "/resolve": {
+            "get": {
+                "summary": "Resolve package specs (query params)",
+                "parameters": [
+                    {
+                        "name": "spec",
+                        "in": "query",
+                        "required": True,
+                        "schema": {"type": "string"},
+                        "description": "Package spec (repeatable)",
+                    },
+                    {
+                        "name": "channel",
+                        "in": "query",
+                        "schema": {"type": "string"},
+                        "description": "Channel (repeatable)",
+                    },
+                    {
+                        "name": "platform",
+                        "in": "query",
+                        "schema": {"type": "string"},
+                        "description": "Target platform (repeatable)",
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Resolved packages per platform",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/SolveResult"
+                                    },
+                                }
+                            }
+                        },
+                    }
+                },
+            },
+            "post": {
+                "summary": "Resolve package specs and/or file content",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ResolveRequest"
+                            }
+                        }
+                    },
+                },
+                "parameters": [
+                    {
+                        "name": "spec",
+                        "in": "query",
+                        "schema": {"type": "string"},
+                        "description": "Package spec (repeatable, overridden by body)",
+                    },
+                    {
+                        "name": "channel",
+                        "in": "query",
+                        "schema": {"type": "string"},
+                        "description": "Channel (repeatable, overridden by body)",
+                    },
+                    {
+                        "name": "platform",
+                        "in": "query",
+                        "schema": {"type": "string"},
+                        "description": "Target platform "
+                        "(repeatable, overridden by body)",
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Resolved packages per platform",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/SolveResult"
+                                    },
+                                }
+                            }
+                        },
+                    }
+                },
+            },
+        },
+        "/health": {
+            "get": {
+                "summary": "Liveness probe",
+                "responses": {
+                    "200": {
+                        "description": "Server is healthy",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "status": {"type": "string"}
+                                    },
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    },
+    "components": {
+        "schemas": {
+            "ResolveRequest": {
+                "type": "object",
+                "properties": {
+                    "specs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Package specs (e.g. python=3.13)",
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": "Environment file content",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename hint for "
+                        "format detection",
+                    },
+                    "channels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Conda channels",
+                    },
+                    "platforms": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Target platforms (e.g. linux-64)",
+                    },
+                },
+            },
+            "SolveResult": {
+                "type": "object",
+                "properties": {
+                    "platform": {"type": "string"},
+                    "packages": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ResolvedPackage"
+                        },
+                    },
+                    "error": {
+                        "type": "string",
+                        "nullable": True,
+                    },
+                },
+            },
+            "ResolvedPackage": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "version": {"type": "string"},
+                    "build": {"type": "string"},
+                    "build_number": {"type": "integer"},
+                    "channel": {"type": "string"},
+                    "subdir": {"type": "string"},
+                    "url": {"type": "string"},
+                    "sha256": {"type": "string"},
+                    "md5": {"type": "string"},
+                    "size": {"type": "integer"},
+                    "depends": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "constrains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+            },
+        }
+    },
+}
+
+
+async def openapi_schema(request: Request) -> JSONResponse:
+    """``GET /openapi.json`` — serve the OpenAPI schema."""
+    return JSONResponse(OPENAPI_SCHEMA)
 
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
-    """Pre-warm repodata caches on startup.
-
-    Runs in a thread to avoid blocking the event loop during the
-    potentially slow repodata fetch.
-    """
+    """Pre-warm repodata caches on startup."""
     global solver_limiter
-    solver_limiter = anyio.CapacityLimiter(4)
+    solver_limiter = anyio.CapacityLimiter(MAX_CONCURRENCY)
     log.info(
         "Pre-warming repodata cache for %s on %s",
-        WARMUP_CHANNELS,
-        WARMUP_PLATFORMS,
+        DEFAULT_CHANNELS,
+        DEFAULT_PLATFORMS,
     )
     await anyio.to_thread.run_sync(
-        lambda: warmup(WARMUP_CHANNELS, WARMUP_PLATFORMS),
+        lambda: warmup(DEFAULT_CHANNELS, DEFAULT_PLATFORMS),
         abandon_on_cancel=True,
     )
     log.info("Repodata cache warm")
@@ -247,14 +427,9 @@ async def lifespan(app: Starlette):
 
 app = Starlette(
     routes=[
-        Route("/solve", solve_specs, methods=["POST"]),
-        Route(
-            "/solve/environment-yml",
-            solve_environment_yml,
-            methods=["POST"],
-        ),
+        Route("/resolve", resolve, methods=["GET", "POST"]),
         Route("/health", health, methods=["GET"]),
-        Route("/cache/clear", cache_clear, methods=["POST"]),
+        Route("/openapi.json", openapi_schema, methods=["GET"]),
     ],
     lifespan=lifespan,
 )
