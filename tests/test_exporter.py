@@ -1,4 +1,4 @@
-"""Tests for conda_resolve.exporter."""
+"""Tests for conda_presto.exporter."""
 from __future__ import annotations
 
 import json
@@ -6,7 +6,7 @@ import json
 import pytest
 from conda.models.environment import Environment
 
-from conda_resolve.exporter import _record_to_dict, export_resolve_json
+from conda_presto.exporter import _record_to_dict, export_resolve_json
 
 
 @pytest.fixture()

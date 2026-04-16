@@ -1,4 +1,4 @@
-"""Benchmarks for conda_resolve hot paths using pytest-benchmark.
+"""Benchmarks for conda_presto hot paths using pytest-benchmark.
 
 Compares the server path (ResolvedPackage/SolveResult) against the
 CLI path (PackageRecord/Environment) to verify the server types
@@ -12,7 +12,7 @@ import sys
 import pytest
 from conda.models.environment import Environment
 
-from conda_resolve.resolve import (
+from conda_presto.resolve import (
     ResolvedPackage,
     SolveResult,
     solve,

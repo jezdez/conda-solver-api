@@ -19,12 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Configuration module (`config.py`) with environment variable overrides
-  for all operational settings: `CONDA_RESOLVE_CHANNELS`,
-  `CONDA_RESOLVE_PLATFORMS`, `CONDA_RESOLVE_CONCURRENCY`,
-  `CONDA_RESOLVE_WORKERS`, `CONDA_RESOLVE_MAX_BODY_BYTES`,
-  `CONDA_RESOLVE_HOST`, `CONDA_RESOLVE_PORT`,
-  `CONDA_RESOLVE_GLIBC_VERSION`, `CONDA_RESOLVE_LINUX_VERSION`,
-  `CONDA_RESOLVE_OSX_VERSION`.
+  for all operational settings: `CONDA_PRESTO_CHANNELS`,
+  `CONDA_PRESTO_PLATFORMS`, `CONDA_PRESTO_CONCURRENCY`,
+  `CONDA_PRESTO_WORKERS`, `CONDA_PRESTO_MAX_BODY_BYTES`,
+  `CONDA_PRESTO_HOST`, `CONDA_PRESTO_PORT`,
+  `CONDA_PRESTO_GLIBC_VERSION`, `CONDA_PRESTO_LINUX_VERSION`,
+  `CONDA_PRESTO_OSX_VERSION`.
 - Support for `.toml` and `.json` file extensions in the HTTP API
   file upload endpoint.
 - Dynamic OpenAPI schema version derived from package metadata
@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Default fallback channel changed from `defaults` to `conda-forge`
-  in both CLI and HTTP API, configurable via `CONDA_RESOLVE_CHANNELS`.
+  in both CLI and HTTP API, configurable via `CONDA_PRESTO_CHANNELS`.
 - Unified HTTP API to single `/resolve` endpoint supporting both
   GET (query params) and POST (JSON body). Removed old `/solve`,
   `/solve/environment-yml`, and `/cache/clear` endpoints.
@@ -104,7 +104,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Custom `resolve-json` environment exporter providing full package
   metadata (sha256, md5, urls, sizes, dependencies) as the default
   CLI output format.
-- Conda subcommand plugin (`conda resolve`) with lazy imports
+- Conda subcommand plugin (`conda presto`) with lazy imports
   to keep plugin load under 1 ms.
 - Lazy uvicorn import in `cmd_serve()` to reduce CLI startup
   overhead by ~100 ms for non-server invocations.
@@ -122,7 +122,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependabot configuration for GitHub Actions version updates.
 - BSD 3-Clause license.
 
-[0.2.1]: https://github.com/jezdez/conda-resolve/releases/tag/v0.2.1
-[0.2.0]: https://github.com/jezdez/conda-resolve/releases/tag/v0.2.0
-[0.1.1]: https://github.com/jezdez/conda-resolve/releases/tag/v0.1.1
-[0.1.0]: https://github.com/jezdez/conda-resolve/releases/tag/v0.1.0
+[0.2.1]: https://github.com/jezdez/conda-presto/releases/tag/v0.2.1
+[0.2.0]: https://github.com/jezdez/conda-presto/releases/tag/v0.2.0
+[0.1.1]: https://github.com/jezdez/conda-presto/releases/tag/v0.1.1
+[0.1.0]: https://github.com/jezdez/conda-presto/releases/tag/v0.1.0

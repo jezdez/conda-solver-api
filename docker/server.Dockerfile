@@ -2,7 +2,7 @@ FROM ghcr.io/prefix-dev/pixi:0.67.0 AS build
 
 WORKDIR /app
 COPY pyproject.toml pixi.lock ./
-COPY conda_resolve/ conda_resolve/
+COPY conda_presto/ conda_presto/
 RUN pixi install --locked -e prod
 RUN pixi shell-hook -e prod -s bash > /shell-hook
 RUN echo '#!/bin/bash' > /app/entrypoint.sh \
@@ -17,7 +17,7 @@ RUN groupadd --gid 10001 app \
 WORKDIR /app
 COPY --from=build /app/.pixi/envs/prod /app/.pixi/envs/prod
 COPY --from=build --chmod=0755 /app/entrypoint.sh /app/entrypoint.sh
-COPY conda_resolve/ /app/conda_resolve/
+COPY conda_presto/ /app/conda_presto/
 
 RUN mkdir -p /app/.pixi/envs/prod/pkgs/cache /home/app/.conda/pkgs \
     && chown -R app:app /app/.pixi/envs/prod/pkgs /home/app
@@ -25,5 +25,5 @@ RUN mkdir -p /app/.pixi/envs/prod/pkgs/cache /home/app/.conda/pkgs \
 USER app
 EXPOSE 8000
 
-ENTRYPOINT ["/app/entrypoint.sh", "conda", "resolve"]
+ENTRYPOINT ["/app/entrypoint.sh", "conda", "presto"]
 CMD ["--serve", "--host", "0.0.0.0"]

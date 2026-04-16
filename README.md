@@ -1,11 +1,11 @@
-# conda-resolve
+# conda-presto
 
 A fast, dry-run conda solver exposed as both a CLI and an HTTP API.
 Given package specs or an `environment.yml`, it resolves fully pinned
 packages (with SHA256 hashes, URLs, and dependency metadata) for one
 or more platforms — without downloading or installing anything.
 
-It registers as a conda subcommand plugin (`conda resolve`) and
+It registers as a conda subcommand plugin (`conda presto`) and
 can also run as a standalone HTTP service for integration into
 CI pipelines, security scanners, or other tooling that needs resolved
 package lists programmatically.
@@ -23,7 +23,7 @@ package lists programmatically.
 - Conda-native CLI flags (`--override-channels`, `--solver`, `--offline`, etc.)
 - HTTP API with JSON input/output (Starlette + uvicorn)
 - Repodata index caching with TTL (300s) for ~50x faster repeat solves
-- Conda plugin: `conda resolve` / `conda resolve --serve`
+- Conda plugin: `conda presto` / `conda presto --serve`
 - Uses `conda-rattler-solver` for fast SAT solving
 
 ## Install
@@ -31,14 +31,14 @@ package lists programmatically.
 Install globally with [pixi](https://pixi.sh):
 
 ```bash
-pixi global install --git https://github.com/jezdez/conda-resolve.git
+pixi global install --git https://github.com/jezdez/conda-presto.git
 ```
 
 For development, clone the repo and install locally:
 
 ```bash
-git clone https://github.com/jezdez/conda-resolve.git
-cd conda-resolve
+git clone https://github.com/jezdez/conda-presto.git
+cd conda-presto
 pixi install
 ```
 
@@ -49,13 +49,13 @@ Requires conda >= 25.3 and Python >= 3.13.
 ### As a conda subcommand
 
 ```bash
-conda resolve -c conda-forge -p linux-64 python=3.12 numpy
+conda presto -c conda-forge -p linux-64 python=3.12 numpy
 
-conda resolve -f environment.yml -p linux-64 -p osx-arm64
+conda presto -f environment.yml -p linux-64 -p osx-arm64
 
-conda resolve -c conda-forge -p linux-64 --format explicit zlib
+conda presto -c conda-forge -p linux-64 --format explicit zlib
 
-conda resolve --serve --port 8000
+conda presto --serve --port 8000
 ```
 
 ### Output formats
@@ -64,7 +64,7 @@ conda resolve --serve --port 8000
 sizes, depends, and constrains.
 
 ```bash
-conda resolve -c conda-forge -p linux-64 zlib
+conda presto -c conda-forge -p linux-64 zlib
 ```
 
 ```json
@@ -93,13 +93,13 @@ conda resolve -c conda-forge -p linux-64 zlib
 compatible with `conda create --file`.
 
 ```bash
-conda resolve -c conda-forge -p linux-64 --format explicit zlib
+conda presto -c conda-forge -p linux-64 --format explicit zlib
 ```
 
 **YAML** (`--format yaml`): conda environment.yml format.
 
 ```bash
-conda resolve -c conda-forge -p linux-64 --format yaml zlib
+conda presto -c conda-forge -p linux-64 --format yaml zlib
 ```
 
 Other formats can be provided by conda exporter plugins
@@ -110,8 +110,8 @@ Other formats can be provided by conda exporter plugins
 Start the server:
 
 ```bash
-conda resolve --serve
-# or: uvicorn conda_resolve.app:app
+conda presto --serve
+# or: uvicorn conda_presto.app:app
 ```
 
 ### `GET /resolve`
@@ -160,12 +160,12 @@ Two image flavors are published to GitHub Container Registry on every
 release, for both `linux/amd64` and `linux/arm64`:
 
 - **Server** (`latest`) — starts the HTTP API by default
-- **CLI** (`cli`) — runs `conda resolve` directly, pass args after the image name
+- **CLI** (`cli`) — runs `conda presto` directly, pass args after the image name
 
 ### Server image
 
 ```bash
-docker run -p 8000:8000 ghcr.io/jezdez/conda-resolve:latest
+docker run -p 8000:8000 ghcr.io/jezdez/conda-presto:latest
 ```
 
 The first startup takes ~20-30s while the repodata cache warms up.
@@ -180,9 +180,9 @@ curl -X POST http://localhost:8000/resolve \
 ### CLI image
 
 ```bash
-docker run ghcr.io/jezdez/conda-resolve:cli -c conda-forge -p linux-64 zlib
+docker run ghcr.io/jezdez/conda-presto:cli -c conda-forge -p linux-64 zlib
 
-docker run ghcr.io/jezdez/conda-resolve:cli -f environment.yml -p linux-64
+docker run ghcr.io/jezdez/conda-presto:cli -f environment.yml -p linux-64
 ```
 
 ### Available tags
@@ -200,11 +200,11 @@ docker run ghcr.io/jezdez/conda-resolve:cli -f environment.yml -p linux-64
 ### Building locally
 
 ```bash
-docker build -f docker/server.Dockerfile -t conda-resolve .
-docker run -p 8000:8000 conda-resolve
+docker build -f docker/server.Dockerfile -t conda-presto .
+docker run -p 8000:8000 conda-presto
 
-docker build -f docker/cli.Dockerfile -t conda-resolve-cli .
-docker run conda-resolve-cli -c conda-forge -p linux-64 zlib
+docker build -f docker/cli.Dockerfile -t conda-presto-cli .
+docker run conda-presto-cli -c conda-forge -p linux-64 zlib
 ```
 
 Both images use a multi-stage build: dependencies are installed with
@@ -241,16 +241,16 @@ default channels and platforms (see environment variables below).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CONDA_RESOLVE_CHANNELS` | `conda-forge` | Comma-separated default channels when none are specified in a request. Also used for cache warmup. |
-| `CONDA_RESOLVE_PLATFORMS` | `linux-64,osx-arm64,osx-64` | Comma-separated platforms to pre-warm repodata caches for on startup. |
-| `CONDA_RESOLVE_CONCURRENCY` | `4` | Maximum concurrent solve requests (thread limiter). |
-| `CONDA_RESOLVE_WORKERS` | `min(4, cpu_count)` | Process pool size for multi-platform parallel solves. |
-| `CONDA_RESOLVE_MAX_BODY_BYTES` | `1048576` (1 MB) | Maximum allowed request body size in bytes. |
-| `CONDA_RESOLVE_HOST` | `127.0.0.1` | Default bind address for `--serve` / `--host`. |
-| `CONDA_RESOLVE_PORT` | `8000` | Default port for `--serve` / `--port`. |
-| `CONDA_RESOLVE_GLIBC_VERSION` | `2.17` | Virtual `__glibc` version for cross-platform Linux solves. |
-| `CONDA_RESOLVE_LINUX_VERSION` | `5.15` | Virtual `__linux` version for cross-platform Linux solves. |
-| `CONDA_RESOLVE_OSX_VERSION` | `11.0` | Virtual `__osx` version for cross-platform macOS solves. |
+| `CONDA_PRESTO_CHANNELS` | `conda-forge` | Comma-separated default channels when none are specified in a request. Also used for cache warmup. |
+| `CONDA_PRESTO_PLATFORMS` | `linux-64,osx-arm64,osx-64` | Comma-separated platforms to pre-warm repodata caches for on startup. |
+| `CONDA_PRESTO_CONCURRENCY` | `4` | Maximum concurrent solve requests (thread limiter). |
+| `CONDA_PRESTO_WORKERS` | `min(4, cpu_count)` | Process pool size for multi-platform parallel solves. |
+| `CONDA_PRESTO_MAX_BODY_BYTES` | `1048576` (1 MB) | Maximum allowed request body size in bytes. |
+| `CONDA_PRESTO_HOST` | `127.0.0.1` | Default bind address for `--serve` / `--host`. |
+| `CONDA_PRESTO_PORT` | `8000` | Default port for `--serve` / `--port`. |
+| `CONDA_PRESTO_GLIBC_VERSION` | `2.17` | Virtual `__glibc` version for cross-platform Linux solves. |
+| `CONDA_PRESTO_LINUX_VERSION` | `5.15` | Virtual `__linux` version for cross-platform Linux solves. |
+| `CONDA_PRESTO_OSX_VERSION` | `11.0` | Virtual `__osx` version for cross-platform macOS solves. |
 
 #### Conda tuning
 
@@ -278,8 +278,8 @@ defaults via `context.override_virtual_packages`:
 - **linux**: `__glibc` (default `2.17`, conda-forge baseline), `__linux` (default `5.15`)
 - **osx**: `__osx` (default `11.0`, Big Sur, conda-forge arm64 baseline)
 
-Override these via `CONDA_RESOLVE_GLIBC_VERSION`,
-`CONDA_RESOLVE_LINUX_VERSION`, and `CONDA_RESOLVE_OSX_VERSION`
+Override these via `CONDA_PRESTO_GLIBC_VERSION`,
+`CONDA_PRESTO_LINUX_VERSION`, and `CONDA_PRESTO_OSX_VERSION`
 (see the application environment variables table above).
 
 ## Benchmarks
@@ -319,5 +319,5 @@ Run benchmarks:
 
 ```bash
 pixi run bench               # pytest-benchmark
-hyperfine 'pixi run conda-resolve -c conda-forge -p linux-64 python=3.12 numpy'
+hyperfine 'pixi run conda-presto -c conda-forge -p linux-64 python=3.12 numpy'
 ```

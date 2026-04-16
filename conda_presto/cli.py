@@ -1,8 +1,8 @@
-"""CLI for conda-resolve.
+"""CLI for conda-presto.
 
 Exposes ``configure_parser`` and ``execute`` for the conda plugin hook
-(``conda resolve ...``), and ``main`` for standalone use via the
-``conda-resolve`` script entry point.
+(``conda presto ...``), and ``main`` for standalone use via the
+``conda-presto`` script entry point.
 
 The default output format is ``resolve-json``, a custom exporter that
 includes full package metadata (sha256, urls, sizes, etc.).  Use
@@ -10,11 +10,11 @@ includes full package metadata (sha256, urls, sizes, etc.).  Use
 
 Resolve is the default action.  Use ``--serve`` to start the HTTP API
 server instead.  The ``--host`` and ``--port`` defaults can be set via
-``CONDA_RESOLVE_HOST`` and ``CONDA_RESOLVE_PORT`` environment variables
-(see :mod:`conda_resolve.config`).
+``CONDA_PRESTO_HOST`` and ``CONDA_PRESTO_PORT`` environment variables
+(see :mod:`conda_presto.config`).
 
 When no channels are provided via ``-c`` or environment files, the CLI
-falls back to ``CONDA_RESOLVE_CHANNELS`` (default: ``conda-forge``).
+falls back to ``CONDA_PRESTO_CHANNELS`` (default: ``conda-forge``).
 """
 from __future__ import annotations
 
@@ -181,12 +181,12 @@ def cmd_serve(args: argparse.Namespace):
     import uvicorn
 
     uvicorn.run(
-        "conda_resolve.app:app", host=args.host, port=args.port
+        "conda_presto.app:app", host=args.host, port=args.port
     )
 
 
 def main():
-    """Standalone entry point for the ``conda-resolve`` script."""
+    """Standalone entry point for the ``conda-presto`` script."""
     parser = argparse.ArgumentParser(
         description="Resolve conda environments to fully pinned "
         "packages with SHA256 hashes.",

@@ -2541,6 +2541,11 @@ packages:
   - pkg:pypi/conda-package-streaming?source=hash-mapping
   size: 21933
   timestamp: 1751548225624
+- pypi: ./
+  name: conda-presto
+  version: 0.2.1
+  sha256: 21e67370c50e41f10f9d08d4a637f6e2d1f64bf954df90ec4c516b230f326033
+  requires_python: '>=3.13'
 - conda: https://conda.anaconda.org/conda-forge/noarch/conda-rattler-solver-0.0.6-pyhcf101f3_0.conda
   sha256: 07f361d11971a8305c64faedcd7546c1c0c67ebb95ff4b37ea2ce53472426151
   md5: 9a57d76170f8b7617b506c976e30277a
@@ -2555,11 +2560,6 @@ packages:
   - pkg:pypi/conda-rattler-solver?source=hash-mapping
   size: 36478
   timestamp: 1773674312824
-- pypi: ./
-  name: conda-resolve
-  version: 0.2.1
-  sha256: c6fa3ef7f3e9d38112b6b1c47280678fd9424e7b5e50d1ba37f5dbd2710642c0
-  requires_python: '>=3.13'
 - conda: https://conda.anaconda.org/conda-forge/linux-64/coverage-7.13.5-py313h3dea7bd_0.conda
   sha256: 4b38c6648d0ccd6dca1d1e0d826609aaf2fabfd662257c1fff00bdd0e69e02da
   md5: acbda45380f5097ade59014704eb0ba0

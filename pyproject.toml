@@ -3,7 +3,7 @@ requires = ["hatchling>=1.12.2"]
 build-backend = "hatchling.build"
 
 [project]
-name = "conda-resolve"
+name = "conda-presto"
 version = "0.2.1"
 description = "Resolve conda environment.yml files to fully pinned package lists with SHA256 hashes"
 license = "BSD-3-Clause"
@@ -11,10 +11,10 @@ requires-python = ">=3.13"
 dependencies = []
 
 [project.scripts]
-conda-resolve = "conda_resolve.cli:main"
+conda-presto = "conda_presto.cli:main"
 
 [project.entry-points.conda]
-"conda-resolve" = "conda_resolve.plugin"
+"conda-presto" = "conda_presto.plugin"
 
 [tool.ruff]
 target-version = "py313"
@@ -33,11 +33,11 @@ select = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra -v --benchmark-disable --cov=conda_resolve --cov-report=term-missing"
+addopts = "-ra -v --benchmark-disable --cov=conda_presto --cov-report=term-missing"
 markers = ["crossplatform: tests that solve for non-native platforms (deselect with -m 'not crossplatform')"]
 
 [tool.coverage.run]
-source = ["conda_resolve"]
+source = ["conda_presto"]
 
 [tool.coverage.report]
 show_missing = true
@@ -54,7 +54,7 @@ conda-rattler-solver = ">=0.0.6,<0.0.7"
 pyyaml = ">=6.0"
 
 [tool.pixi.pypi-dependencies]
-conda-resolve = { path = ".", editable = true }
+conda-presto = { path = ".", editable = true }
 
 [tool.pixi.feature.dev.dependencies]
 ruff = ">=0.9"
@@ -87,9 +87,9 @@ CONDA_JSON = "true"
 CONDA_SOLVER = "rattler"
 
 [tool.pixi.tasks]
-lint = { cmd = "ruff check conda_resolve tests", description = "Check code style" }
-format = { cmd = "ruff format conda_resolve tests", description = "Auto-format code" }
+lint = { cmd = "ruff check conda_presto tests", description = "Check code style" }
+format = { cmd = "ruff format conda_presto tests", description = "Auto-format code" }
 test = { cmd = "pytest", description = "Run tests" }
 bench = { cmd = "pytest tests/test_benchmarks.py --benchmark-enable", description = "Run benchmarks" }
-serve = { cmd = "uvicorn conda_resolve.app:app --reload", description = "Run dev server" }
-solve = { cmd = "conda-resolve", description = "Run a solve" }
+serve = { cmd = "uvicorn conda_presto.app:app --reload", description = "Run dev server" }
+solve = { cmd = "conda-presto", description = "Run a solve" }

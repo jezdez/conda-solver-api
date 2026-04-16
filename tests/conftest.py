@@ -1,11 +1,11 @@
-"""Shared fixtures for conda-resolve tests."""
+"""Shared fixtures for conda-presto tests."""
 from __future__ import annotations
 
 import pytest
 from conda.models.channel import Channel
 from conda.models.records import PackageRecord
 
-from conda_resolve.resolve import ResolvedPackage, SolveResult
+from conda_presto.resolve import ResolvedPackage, SolveResult
 
 
 @pytest.fixture()

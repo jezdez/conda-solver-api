@@ -8,13 +8,13 @@ Endpoints:
 - ``GET /openapi.json`` — OpenAPI 3.1 schema
 
 Configuration is loaded from environment variables via
-:mod:`conda_resolve.config`.  See that module for the full list of
-``CONDA_RESOLVE_*`` settings (default channels, concurrency limits,
+:mod:`conda_presto.config`.  See that module for the full list of
+``CONDA_PRESTO_*`` settings (default channels, concurrency limits,
 body size cap, etc.).
 
 Security design:
     - Request bodies are capped at ``MAX_BODY_BYTES`` (configurable via
-      ``CONDA_RESOLVE_MAX_BODY_BYTES``, default 1 MB).
+      ``CONDA_PRESTO_MAX_BODY_BYTES``, default 1 MB).
     - File content is written to a temp file with a whitelisted extension
       and processed through conda's env spec plugin system (same as CLI).
     - Path traversal is prevented by stripping directory components from
@@ -25,7 +25,7 @@ Security design:
 Performance design:
     - All solve calls run off the event loop via ``anyio.to_thread``
       with a concurrency limit of ``MAX_CONCURRENCY`` (configurable via
-      ``CONDA_RESOLVE_CONCURRENCY``).
+      ``CONDA_PRESTO_CONCURRENCY``).
     - The lifespan handler pre-warms repodata caches (also off the
       event loop) so the first request doesn't pay cold-start costs.
 """
@@ -211,8 +211,8 @@ async def health(request: Request) -> JSONResponse:
 OPENAPI_SCHEMA = {
     "openapi": "3.1.0",
     "info": {
-        "title": "conda-resolve",
-        "version": pkg_version("conda-resolve"),
+        "title": "conda-presto",
+        "version": pkg_version("conda-presto"),
         "description": "Fast dry-run conda solver HTTP API.",
     },
     "paths": {

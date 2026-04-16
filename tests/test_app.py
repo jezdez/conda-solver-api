@@ -1,4 +1,4 @@
-"""Tests for conda_resolve.app (Starlette endpoints)."""
+"""Tests for conda_presto.app (Starlette endpoints)."""
 from __future__ import annotations
 
 import pytest
@@ -6,7 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
 
-from conda_resolve.app import (
+from conda_presto.app import (
     health,
     lifespan,
     openapi_schema,
@@ -332,7 +332,7 @@ async def test_resolve_invalid_content_length(client):
 @pytest.mark.anyio
 async def test_resolve_internal_error(client, monkeypatch):
     monkeypatch.setattr(
-        "conda_resolve.app.solve",
+        "conda_presto.app.solve",
         lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     resp = await client.post(
@@ -359,7 +359,7 @@ async def test_openapi_schema(client):
 
 @pytest.mark.anyio
 async def test_lifespan_initializes(monkeypatch):
-    import conda_resolve.app as app_module
+    import conda_presto.app as app_module
 
     warmup_calls = []
 

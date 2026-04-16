@@ -1,11 +1,11 @@
-"""Tests for conda_resolve.plugin registration."""
+"""Tests for conda_presto.plugin registration."""
 from __future__ import annotations
 
 import argparse
 
 import pytest
 
-from conda_resolve.plugin import conda_environment_exporters, conda_subcommands
+from conda_presto.plugin import conda_environment_exporters, conda_subcommands
 
 
 @pytest.fixture()
@@ -21,7 +21,7 @@ def test_plugin_yields_subcommand():
     subcommands = list(conda_subcommands())
     assert len(subcommands) == 1
     sc = subcommands[0]
-    assert sc.name == "resolve"
+    assert sc.name == "presto"
     assert sc.summary
     assert callable(sc.action)
     assert callable(sc.configure_parser)

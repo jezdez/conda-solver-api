@@ -1,4 +1,4 @@
-"""Tests for conda_resolve.cli."""
+"""Tests for conda_presto.cli."""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conda_resolve.cli import (
+from conda_presto.cli import (
     _export_environments,
     _load_files,
     cmd_serve,
@@ -21,7 +21,7 @@ def run_cli(capsys, monkeypatch):
     """Return a helper that invokes the CLI with the given argv list."""
 
     def _run(*argv: str) -> str:
-        monkeypatch.setattr("sys.argv", ["conda-resolve", *argv])
+        monkeypatch.setattr("sys.argv", ["conda-presto", *argv])
         main()
         return capsys.readouterr().out
 
@@ -59,7 +59,7 @@ def test_solve_with_inline_specs(run_cli):
 
 
 def test_solve_no_args_exits(capsys, monkeypatch):
-    monkeypatch.setattr("sys.argv", ["conda-resolve"])
+    monkeypatch.setattr("sys.argv", ["conda-presto"])
     with pytest.raises(SystemExit, match="1"):
         main()
     err = capsys.readouterr().err
@@ -113,7 +113,7 @@ def test_load_files_unhandled(tmp_path, monkeypatch, capsys):
             return FakeSpec()
 
     monkeypatch.setattr(
-        "conda_resolve.cli.context.plugin_manager.detect_environment_specifier",
+        "conda_presto.cli.context.plugin_manager.detect_environment_specifier",
         lambda fpath: FakePlugin(),
     )
     with pytest.raises(SystemExit, match="1"):
@@ -124,7 +124,7 @@ def test_load_files_unhandled(tmp_path, monkeypatch, capsys):
 def test_execute_serve_branch(monkeypatch):
     called = []
     monkeypatch.setattr(
-        "conda_resolve.cli.cmd_serve",
+        "conda_presto.cli.cmd_serve",
         lambda args: called.append(args),
     )
     args = argparse.Namespace(serve=True, host="127.0.0.1", port=8000)
@@ -140,7 +140,7 @@ def test_cmd_serve(monkeypatch):
     )
     args = argparse.Namespace(host="0.0.0.0", port=9000)
     cmd_serve(args)
-    assert called == [("conda_resolve.app:app", "0.0.0.0", 9000)]
+    assert called == [("conda_presto.app:app", "0.0.0.0", 9000)]
 
 
 @pytest.mark.parametrize(
@@ -168,7 +168,7 @@ def test_export_environments_edge_cases(
     attrs = {"multiplatform_export": None, "export": None, **exporter_attrs}
     fake_exporter = SimpleNamespace(**attrs)
     monkeypatch.setattr(
-        "conda_resolve.cli.context.plugin_manager"
+        "conda_presto.cli.context.plugin_manager"
         ".get_environment_exporter_by_format",
         lambda fmt: fake_exporter,
     )

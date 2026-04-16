@@ -1,4 +1,4 @@
-"""Tests for conda_resolve.resolve."""
+"""Tests for conda_presto.resolve."""
 from __future__ import annotations
 
 import threading
@@ -8,7 +8,7 @@ import pytest
 from conda.models.environment import Environment
 from conda.models.records import PackageRecord
 
-from conda_resolve.resolve import (
+from conda_presto.resolve import (
     ResolvedPackage,
     SolveResult,
     build_index,
@@ -326,7 +326,7 @@ def test_cached_solve_produces_correct_results():
 def test_solve_one_platform_generic_exception(monkeypatch):
     """Generic exceptions in solve_one_platform are caught as errors."""
     monkeypatch.setattr(
-        "conda_resolve.resolve.run_solver",
+        "conda_presto.resolve.run_solver",
         lambda *a: (_ for _ in ()).throw(TypeError("unexpected")),
     )
     result = solve_one_platform(("conda-forge",), ["zlib"], "linux-64")
@@ -356,7 +356,7 @@ def test_dispatch_on_error(platforms, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
 
     monkeypatch.setattr(
-        "conda_resolve.resolve.get_process_pool",
+        "conda_presto.resolve.get_process_pool",
         lambda: ThreadPoolExecutor(max_workers=2),
     )
 
@@ -387,7 +387,7 @@ def test_dispatch_no_error_propagates(platforms, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
 
     monkeypatch.setattr(
-        "conda_resolve.resolve.get_process_pool",
+        "conda_presto.resolve.get_process_pool",
         lambda: ThreadPoolExecutor(max_workers=2),
     )
 
@@ -427,7 +427,7 @@ def test_warmup_including_pool(monkeypatch):
     """warmup() calls warmup_indexes in both parent and worker processes."""
     calls = []
     monkeypatch.setattr(
-        "conda_resolve.resolve.warmup_indexes",
+        "conda_presto.resolve.warmup_indexes",
         lambda ch, plats: calls.append(("parent", ch, plats)),
     )
 
@@ -444,7 +444,7 @@ def test_warmup_including_pool(monkeypatch):
             return f
 
     monkeypatch.setattr(
-        "conda_resolve.resolve.get_process_pool", lambda: FakePool()
+        "conda_presto.resolve.get_process_pool", lambda: FakePool()
     )
     warmup(["conda-forge"], ["linux-64", "osx-arm64"])
     assert calls[0] == ("parent", ["conda-forge"], ["linux-64", "osx-arm64"])

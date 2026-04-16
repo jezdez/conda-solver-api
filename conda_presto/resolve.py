@@ -52,8 +52,8 @@ log = logging.getLogger(__name__)
 
 # Virtual package overrides for cross-platform solving.
 # Keyed by platform prefix → {package_name: version}.
-# Versions are configurable via CONDA_RESOLVE_GLIBC_VERSION,
-# CONDA_RESOLVE_LINUX_VERSION, and CONDA_RESOLVE_OSX_VERSION.
+# Versions are configurable via CONDA_PRESTO_GLIBC_VERSION,
+# CONDA_PRESTO_LINUX_VERSION, and CONDA_PRESTO_OSX_VERSION.
 VIRTUAL_PACKAGES: dict[str, dict[str, str]] = {
     "linux": {"glibc": GLIBC_VERSION, "linux": LINUX_VERSION},
     "osx": {"osx": OSX_VERSION},
@@ -438,7 +438,7 @@ def get_process_pool() -> ProcessPoolExecutor:
     repeated solves faster.
 
     ``max_workers`` defaults to ``min(4, cpu_count)`` and can be
-    overridden via ``CONDA_RESOLVE_WORKERS``.
+    overridden via ``CONDA_PRESTO_WORKERS``.
     """
     global process_pool
     if process_pool is not None:
