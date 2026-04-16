@@ -396,24 +396,25 @@ cache, solving against `conda-forge`:
 
 | Scenario | Mean | Min | Max |
 |---|---:|---:|---:|
-| zlib, 1 platform | 1.08 s | 1.05 s | 1.16 s |
-| zlib, 3 platforms | 1.45 s | 1.36 s | 1.52 s |
-| py+scipy+pandas+matplotlib, 1 platform | 1.51 s | 1.49 s | 1.56 s |
-| py+scipy+pandas+matplotlib, 3 platforms | 1.83 s | 1.80 s | 1.88 s |
-| py+pytorch+transformers+sklearn (11 pkgs), 1 platform | 3.98 s | 3.91 s | 4.12 s |
-| py+pytorch+transformers+sklearn (11 pkgs), 3 platforms | 4.52 s | 4.36 s | 4.75 s |
+| zlib, 1 platform | 0.79 s | 0.77 s | 0.86 s |
+| zlib, 3 platforms | 1.34 s | 1.33 s | 1.37 s |
+| py+scipy+pandas+matplotlib, 1 platform | 0.94 s | 0.92 s | 1.00 s |
+| py+scipy+pandas+matplotlib, 3 platforms | 1.87 s | 1.80 s | 1.94 s |
+| py+pytorch+transformers+sklearn (11 pkgs), 1 platform | 1.90 s | 1.88 s | 1.93 s |
+| py+pytorch+transformers+sklearn (11 pkgs), 3 platforms | 4.44 s | 4.37 s | 4.52 s |
 
 Times include Python startup (~50 ms), pixi overhead (~50 ms), and
 conda import (~200 ms). Multi-platform solves run in parallel and
-scale sub-linearly (3 platforms in ~1.15–1.35x the time of 1).
+scale sub-linearly (3 platforms in ~1.7–2.3x the time of 1, depending
+on how much of the solve is dominated by per-platform SAT work).
 
 Pipeline scenarios for the format-conversion workflow described
 above (`python=3.12 numpy pandas`, single platform):
 
 | Pipeline | Mean | Min | Max |
 |---|---:|---:|---:|
-| `env.yml` &rarr; `pixi.lock` (presto only) | 0.91 s | 0.88 s | 0.97 s |
-| `env.yml` &rarr; `pixi.lock` &rarr; `conda env create --dry-run` | 1.21 s | 1.18 s | 1.22 s |
+| `env.yml` &rarr; `pixi.lock` (presto only) | 0.88 s | 0.87 s | 0.90 s |
+| `env.yml` &rarr; `pixi.lock` &rarr; `conda env create --dry-run` | 1.18 s | 1.17 s | 1.19 s |
 
 The second row pays for one extra round-trip through conda's own
 solver to validate the lockfile end-to-end.
@@ -425,12 +426,12 @@ With a warm index cache, solves are dominated by SAT time only:
 | Operation | Time |
 |---|---:|
 | Single-platform solve (`zlib`) | ~15 ms |
-| Single-platform solve (`python=3.12, numpy`) | ~98 ms |
-| `ResolvedPackage.from_record` (single) | ~2.0 µs |
-| `ResolvedPackage.from_record` (100 records) | ~220 µs |
-| `msgspec.json.encode(ResolvedPackage)` | ~220 ns |
-| `msgspec.json.encode(SolveResult)` (100 packages) | ~12 µs |
-| Server path: records &rarr; `SolveResult` &rarr; JSON (100 pkgs) | ~225 µs |
+| Single-platform solve (`python=3.12, numpy`) | ~95 ms |
+| `ResolvedPackage.from_record` (single) | ~2.1 µs |
+| `ResolvedPackage.from_record` (100 records) | ~222 µs |
+| `msgspec.json.encode(ResolvedPackage)` | ~242 ns |
+| `msgspec.json.encode(SolveResult)` (100 packages) | ~13 µs |
+| Server path: records &rarr; `SolveResult` &rarr; JSON (100 pkgs) | ~234 µs |
 
 Encoding is dominated by `PackageRecord` &rarr; `ResolvedPackage`
 conversion (about 95% of the server path time); the actual
