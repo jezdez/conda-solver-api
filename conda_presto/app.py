@@ -60,6 +60,7 @@ from .config import (
     DEFAULT_CHANNELS,
     DEFAULT_PLATFORMS,
     LOG_LEVEL,
+    MAX_BODY_BYTES,
     MAX_CONCURRENCY,
     RATE_LIMIT,
 )
@@ -260,7 +261,7 @@ app = Litestar(
         path="/",
     ),
     on_startup=[on_startup],
-    request_max_body_size=1_024 * 1_024,
+    request_max_body_size=MAX_BODY_BYTES,
     compression_config=CompressionConfig(backend="brotli", brotli_gzip_fallback=True),
     cors_config=CORSConfig(allow_origins=CORS_ORIGINS),
     logging_config=LoggingConfig(

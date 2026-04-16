@@ -16,6 +16,8 @@ Server tuning:
     ``CONDA_PRESTO_WORKERS``
         Process pool size for multi-platform solves
         (default: ``min(4, cpu_count)``).
+    ``CONDA_PRESTO_MAX_BODY_BYTES``
+        Max request body size in bytes (default: ``1048576``).
     ``CONDA_PRESTO_HOST``
         Default bind address for ``--serve`` (default: ``127.0.0.1``).
     ``CONDA_PRESTO_PORT``
@@ -49,6 +51,10 @@ DEFAULT_CHANNELS = os.environ.get(
 DEFAULT_PLATFORMS = os.environ.get(
     "CONDA_PRESTO_PLATFORMS", "linux-64,osx-arm64,osx-64"
 ).split(",")
+
+MAX_BODY_BYTES = int(
+    os.environ.get("CONDA_PRESTO_MAX_BODY_BYTES", 1_024 * 1_024)
+)
 
 MAX_CONCURRENCY = int(os.environ.get("CONDA_PRESTO_CONCURRENCY", 4))
 
