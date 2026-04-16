@@ -248,7 +248,6 @@ default channels and platforms (see environment variables below).
 | `CONDA_PRESTO_PLATFORMS` | `linux-64,osx-arm64,osx-64` | Comma-separated platforms to pre-warm repodata caches for on startup. |
 | `CONDA_PRESTO_CONCURRENCY` | `4` | Maximum concurrent solve requests (thread limiter). |
 | `CONDA_PRESTO_WORKERS` | `min(4, cpu_count)` | Process pool size for multi-platform parallel solves. |
-| `CONDA_PRESTO_MAX_BODY_BYTES` | `1048576` (1 MB) | Maximum allowed request body size in bytes. |
 | `CONDA_PRESTO_HOST` | `127.0.0.1` | Default bind address for `--serve` / `--host`. |
 | `CONDA_PRESTO_PORT` | `8000` | Default port for `--serve` / `--port`. |
 | `CONDA_PRESTO_RATE_LIMIT` | `300` | Max requests per minute per client. Set to `0` to disable. |

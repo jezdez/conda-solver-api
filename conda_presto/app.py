@@ -11,11 +11,9 @@ Endpoints:
 Configuration is loaded from environment variables via
 :mod:`conda_presto.config`.  See that module for the full list of
 ``CONDA_PRESTO_*`` settings (default channels, concurrency limits,
-body size cap, CORS, rate limiting, log level, etc.).
+CORS, rate limiting, log level, etc.).
 
 Security design:
-    - Request bodies are capped at ``MAX_BODY_BYTES`` (configurable via
-      ``CONDA_PRESTO_MAX_BODY_BYTES``, default 1 MB).
     - File content is written to a temp file with a whitelisted extension
       and processed through conda's env spec plugin system (same as CLI).
     - Path traversal is prevented by stripping directory components from
@@ -31,8 +29,8 @@ Performance design:
       ``CONDA_PRESTO_CONCURRENCY``).
     - The ``on_startup`` hook pre-warms repodata caches so the first
       request doesn't pay cold-start costs.
-    - Response compression (gzip) reduces bandwidth for large solve
-      results.
+    - Response compression (brotli with gzip fallback) reduces
+      bandwidth for large solve results.
 """
 from __future__ import annotations
 
