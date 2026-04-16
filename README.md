@@ -166,41 +166,32 @@ curl 'http://localhost:8000/resolve?spec=python=3.12&spec=numpy&channel=conda-fo
 
 ### `POST /resolve`
 
-Resolve specs via a `ResolveRequest` JSON body (use a heredoc so the
-JSON stays readable):
+Resolve specs via a `ResolveRequest` JSON body (`curl --json` sets
+`Content-Type: application/json` automatically):
 
 ```bash
-curl -sS -X POST http://localhost:8000/resolve \
-  -H 'Content-Type: application/json' \
-  --data @- <<'JSON'
-{
-  "specs": ["python=3.12", "numpy"],
-  "channels": ["conda-forge"],
-  "platforms": ["linux-64"]
-}
-JSON
+curl -sS http://localhost:8000/resolve \
+  --json '{"specs":["python=3.12","numpy"],"channels":["conda-forge"],"platforms":["linux-64"]}'
 ```
 
-Send an environment file via the JSON envelope's `file` field:
+Upload an environment file directly — no JSON wrapping, no `jq` —
+via Content-Type dispatch:
 
 ```bash
-curl -sS -X POST http://localhost:8000/resolve \
-  -H 'Content-Type: application/json' \
-  --data @- <<'JSON'
-{
-  "file": "name: env\nchannels:\n  - conda-forge\ndependencies:\n  - scipy\n",
-  "platforms": ["linux-64"]
-}
-JSON
+curl -sS --data-binary @environment.yml \
+  -H 'Content-Type: application/yaml' \
+  'http://localhost:8000/resolve?platform=linux-64'
 ```
 
-JSON requires `\n`-escaped newlines inside strings, which is awkward
-for real `environment.yml` files.  See the raw-body form below
-(`Content-Type: application/yaml`) for the cleaner way to upload a
-file.
+Accepted raw-body Content-Types: `application/yaml`,
+`application/x-yaml`, `text/yaml`, `application/toml`, `text/plain`.
+Use `?filename=` to pick the parser when Content-Type is ambiguous
+(e.g. `?filename=pixi.lock` to force the lockfile parser on a
+generic YAML upload).
 
-Query params (`spec`, `channel`, `platform`) work on both GET and POST.
-Body fields override query params when both are present.
+Query params (`spec`, `channel`, `platform`, `format`, `filename`)
+work on both GET and POST.  On the JSON dispatch, body fields
+override query params when both are present.
 
 By default, returns a JSON array with one entry per platform — the
 same shape the CLI emits by default.  Partial failures are expressed
@@ -224,12 +215,9 @@ objects only, any solver failure on the `?format=` path returns HTTP
 500 instead of a partial response — use the default (no `format` query
 param) when you want per-platform error details.
 
-`POST /resolve` dispatches on `Content-Type`: `application/json`
-expects a `ResolveRequest` envelope, while `application/yaml`,
-`application/toml`, or `text/plain` treat the body as a raw
-environment file (parsed by conda's env-spec plugin registry).
-That makes the full pipeline `environment.yml` → remote solve →
-`pixi.lock` → local `conda env create` a plain `curl` one-liner:
+Combined with the raw-body upload, the full pipeline
+`environment.yml` → remote solve → `pixi.lock` → local
+`conda env create` is a plain `curl` one-liner:
 
 ```bash
 curl -sS --data-binary @environment.yml \
@@ -238,9 +226,6 @@ curl -sS --data-binary @environment.yml \
   > pixi.lock
 conda env create -n demo -f pixi.lock
 ```
-
-Pass `?filename=` if the Content-Type is too generic (e.g. to force
-`pixi.lock` parsing for a generic YAML upload).
 
 ### `GET /health`
 
