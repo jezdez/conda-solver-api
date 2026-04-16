@@ -166,21 +166,38 @@ curl 'http://localhost:8000/resolve?spec=python=3.12&spec=numpy&channel=conda-fo
 
 ### `POST /resolve`
 
-Resolve specs and/or file content via JSON body:
+Resolve specs via a `ResolveRequest` JSON body (use a heredoc so the
+JSON stays readable):
 
 ```bash
-curl -X POST http://localhost:8000/resolve \
+curl -sS -X POST http://localhost:8000/resolve \
   -H 'Content-Type: application/json' \
-  -d '{"specs": ["python=3.12", "numpy"], "channels": ["conda-forge"], "platforms": ["linux-64"]}'
+  --data @- <<'JSON'
+{
+  "specs": ["python=3.12", "numpy"],
+  "channels": ["conda-forge"],
+  "platforms": ["linux-64"]
+}
+JSON
 ```
 
-Send environment file content:
+Send an environment file via the JSON envelope's `file` field:
 
 ```bash
-curl -X POST http://localhost:8000/resolve \
+curl -sS -X POST http://localhost:8000/resolve \
   -H 'Content-Type: application/json' \
-  -d '{"file": "name: env\nchannels:\n  - conda-forge\ndependencies:\n  - scipy\n", "platforms": ["linux-64"]}'
+  --data @- <<'JSON'
+{
+  "file": "name: env\nchannels:\n  - conda-forge\ndependencies:\n  - scipy\n",
+  "platforms": ["linux-64"]
+}
+JSON
 ```
+
+JSON requires `\n`-escaped newlines inside strings, which is awkward
+for real `environment.yml` files.  See the raw-body form below
+(`Content-Type: application/yaml`) for the cleaner way to upload a
+file.
 
 Query params (`spec`, `channel`, `platform`) work on both GET and POST.
 Body fields override query params when both are present.
