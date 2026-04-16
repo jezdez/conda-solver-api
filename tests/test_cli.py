@@ -3,8 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import sys
 
 import pytest
+import yaml
+from conda.base.context import context
+from conda.exceptions import PackagesNotFoundError
 
 from conda_presto.cli import (
     cmd_serve,
@@ -116,8 +121,6 @@ def test_convert_environment_yml_structural(
     run_cli, tmp_path, fmt, version_key, version_value, package_marker
 ):
     """``environment.yml`` -> solve -> lockfile structural sanity check."""
-    import yaml
-
     env_yml = tmp_path / "environment.yml"
     env_yml.write_text(
         "channels:\n  - conda-forge\n"
@@ -143,11 +146,6 @@ def test_pipeline_environment_yml_to_conda_env_create(tmp_path):
     conda's env-spec plugin registry (via ``conda-lockfiles``) without
     touching any plugin internals. Exercises only conda's public CLI.
     """
-    import subprocess
-    import sys
-
-    from conda.base.context import context
-
     env_yml = tmp_path / "environment.yml"
     env_yml.write_text(
         "channels:\n  - conda-forge\n"
@@ -258,8 +256,6 @@ def test_cmd_solve_unknown_format_exits(run_cli, monkeypatch, capsys):
 
 def test_cmd_solve_format_solver_error_exits(run_cli, monkeypatch, capsys):
     """cmd_solve --format surfaces known solver errors cleanly (no traceback)."""
-    from conda.exceptions import PackagesNotFoundError
-
     def raise_pnf(*a, **kw):
         raise PackagesNotFoundError(["__nonexistent__"])
 

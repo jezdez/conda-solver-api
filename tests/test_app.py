@@ -1,11 +1,15 @@
 """Tests for conda_presto.app (Litestar endpoints)."""
 from __future__ import annotations
 
+import time
+
 import pytest
+import yaml
 from httpx import ASGITransport, AsyncClient
 from litestar import Litestar
 from litestar.openapi import OpenAPIConfig
 
+import conda_presto.app as app_module
 from conda_presto.app import (
     health,
     on_shutdown,
@@ -350,8 +354,6 @@ async def test_resolve_generic_error_does_not_leak_paths(client, monkeypatch):
 
 @pytest.mark.anyio
 async def test_resolve_solve_timeout(client, monkeypatch):
-    import time
-
     monkeypatch.setattr("conda_presto.app.SOLVE_TIMEOUT_S", 0.1)
 
     def slow_solve(*a, **kw):
@@ -507,13 +509,109 @@ async def test_resolve_post_format_query_param(client):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "content_type, filename_override, body",
+    [
+        pytest.param(
+            "application/yaml",
+            None,
+            "channels:\n  - conda-forge\ndependencies:\n  - zlib\n",
+            id="yaml",
+        ),
+        pytest.param(
+            "application/x-yaml",
+            None,
+            "channels:\n  - conda-forge\ndependencies:\n  - zlib\n",
+            id="x-yaml",
+        ),
+        pytest.param(
+            "text/yaml",
+            None,
+            "channels:\n  - conda-forge\ndependencies:\n  - zlib\n",
+            id="text-yaml",
+        ),
+        pytest.param(
+            "application/yaml; charset=utf-8",
+            None,
+            "channels:\n  - conda-forge\ndependencies:\n  - zlib\n",
+            id="with-charset",
+        ),
+        pytest.param(
+            "application/yaml",
+            "environment.yaml",
+            "channels:\n  - conda-forge\ndependencies:\n  - zlib\n",
+            id="filename-override",
+        ),
+    ],
+)
+async def test_resolve_post_raw_yaml_body(
+    client, content_type, filename_override, body
+):
+    """Raw environment.yml body with Content-Type: application/yaml works
+    without JSON wrapping — the one-liner in the README."""
+    url = "/resolve?platform=linux-64"
+    if filename_override:
+        url += f"&filename={filename_override}"
+    resp = await client.post(
+        url,
+        content=body,
+        headers={"content-type": content_type},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data[0]["platform"] == "linux-64"
+    assert data[0]["error"] is None
+    names = [p["name"] for p in data[0]["packages"]]
+    assert "zlib" in names
+
+
+@pytest.mark.anyio
+async def test_resolve_post_raw_body_pixi_lock_pipeline(client):
+    """End-to-end raw-body pipeline: YAML in -> pixi.lock out."""
+    body = "channels:\n  - conda-forge\ndependencies:\n  - zlib\n"
+    resp = await client.post(
+        "/resolve?platform=linux-64&format=pixi-lock-v6",
+        content=body,
+        headers={"content-type": "application/yaml"},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/yaml")
+    data = yaml.safe_load(resp.text)
+    assert data["version"] == 6
+    assert "linux-64" in data["environments"]["default"]["packages"]
+
+
+@pytest.mark.anyio
+async def test_resolve_post_raw_body_invalid_utf8(client):
+    resp = await client.post(
+        "/resolve?platform=linux-64",
+        content=b"\xff\xfe not utf-8",
+        headers={"content-type": "application/yaml"},
+    )
+    assert resp.status_code == 400
+    assert "UTF-8" in resp.json()["error"]
+
+
+@pytest.mark.anyio
+async def test_resolve_post_unsupported_content_type(client):
+    resp = await client.post(
+        "/resolve",
+        content=b"anything",
+        headers={"content-type": "application/octet-stream"},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "Unsupported Content-Type" in body["error"]
+    assert "application/json" in body["supported"]
+    assert "application/yaml" in body["supported"]
+
+
+@pytest.mark.anyio
 async def test_convert_environment_yml_to_pixi_lock_via_http(
     client, tmp_path
 ):
     """End-to-end HTTP: POST ``environment.yml`` body -> pixi.lock
     response. Mirrors the CLI pipeline test."""
-    import yaml
-
     platform = "linux-64"
     resp = await client.post(
         "/resolve?format=pixi-lock-v6",
@@ -613,8 +711,6 @@ async def test_openapi_schema(client):
 
 @pytest.mark.anyio
 async def test_on_startup_initializes(monkeypatch):
-    import conda_presto.app as app_module
-
     warmup_calls = []
 
     def fake_warmup(channels, platforms):

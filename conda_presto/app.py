@@ -66,6 +66,7 @@ from dataclasses import dataclass
 from importlib.metadata import version as pkg_version
 
 import anyio
+import msgspec
 from conda.base.context import context
 from litestar import Litestar, Request, get, post
 from litestar.config.compression import CompressionConfig
@@ -106,10 +107,21 @@ log = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {".yml", ".yaml", ".txt", ".lock", ".toml", ".json"}
 
+RAW_CONTENT_TYPE_EXTENSIONS: dict[str, str] = {
+    "application/yaml": ".yml",
+    "application/x-yaml": ".yml",
+    "text/yaml": ".yml",
+    "text/x-yaml": ".yml",
+    "application/toml": ".toml",
+    "application/x-toml": ".toml",
+    "text/toml": ".toml",
+    "text/plain": ".txt",
+}
+
 
 @dataclass
 class ResolveRequest:
-    """JSON body for ``POST /resolve``.
+    """JSON body for ``POST /resolve`` (Content-Type: application/json).
 
     Fields default to ``None`` (not present) rather than empty lists so
     that the handler can use presence-based override semantics: an
@@ -297,35 +309,102 @@ async def resolve_get(
 @post("/resolve", status_code=200)
 async def resolve_post(
     request: Request,
-    data: ResolveRequest,
     spec: list[str] | None = None,
     channel: list[str] | None = None,
     platform: list[str] | None = None,
     format: str | None = None,
+    filename: str | None = None,
 ) -> Response:
-    """Resolve package specs and/or file content via JSON body.
+    """Resolve package specs and/or an environment file via POST body.
 
-    Body fields override query params based on presence: an explicit
-    field in the JSON body (even an empty array) overrides the
-    corresponding query param.  Fields omitted from the body fall
-    through to the query param value, if any.
+    Dispatch on ``Content-Type``:
 
-    Pass ``?format=<name>`` to route the response through conda's
-    exporter plugin registry.  ``format`` is query-only; it is not
-    read from the body.
+    * ``application/json`` (or missing): body is a :class:`ResolveRequest`
+      envelope.  Body fields override query params by presence — an
+      explicit empty array in the body overrides the corresponding
+      query param; an omitted field falls through.
+    * ``application/yaml`` / ``application/x-yaml`` / ``text/yaml`` /
+      ``application/toml`` / ``text/plain``: the body *is* the raw
+      environment file content (e.g. an ``environment.yml``).  Specs,
+      channels, and platforms come from query params only.  The
+      parser is picked from ``Content-Type``; pass ``?filename=`` to
+      override (e.g. ``?filename=pixi.lock`` to force the lockfile
+      parser when Content-Type is a generic YAML).
+
+    Pass ``?format=<name>`` on either dispatch to route the response
+    through conda's exporter plugin registry.  ``format`` is
+    query-only; it is not read from the JSON body.
     """
-    specs = data.specs if data.specs is not None else (spec or [])
-    channels = data.channels if data.channels is not None else (channel or [])
-    platforms = (
-        data.platforms if data.platforms is not None else (platform or [])
+    content_type = (
+        request.headers.get("content-type", "")
+        .split(";")[0]
+        .strip()
+        .lower()
     )
-    file_content = data.file
-    filename = data.filename
+
+    file_content: str | None = None
+    file_name: str | None = None
+
+    if content_type in ("", "application/json"):
+        body = await request.body()
+        if body:
+            try:
+                data = msgspec.json.decode(body, type=ResolveRequest)
+            except (msgspec.DecodeError, msgspec.ValidationError) as exc:
+                return Response(
+                    {"error": f"Invalid JSON body: {exc}"},
+                    status_code=HTTP_400_BAD_REQUEST,
+                )
+        else:
+            data = ResolveRequest()
+
+        specs = data.specs if data.specs is not None else (spec or [])
+        channels = (
+            data.channels if data.channels is not None else (channel or [])
+        )
+        platforms = (
+            data.platforms
+            if data.platforms is not None
+            else (platform or [])
+        )
+        file_content = data.file
+        file_name = data.filename or filename
+    elif content_type in RAW_CONTENT_TYPE_EXTENSIONS:
+        body = await request.body()
+        try:
+            file_content = body.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            return Response(
+                {"error": f"Body is not valid UTF-8: {exc}"},
+                status_code=HTTP_400_BAD_REQUEST,
+            )
+        file_name = filename or (
+            f"environment{RAW_CONTENT_TYPE_EXTENSIONS[content_type]}"
+        )
+        specs = spec or []
+        channels = channel or []
+        platforms = platform or []
+    else:
+        return Response(
+            {
+                "error": (
+                    f"Unsupported Content-Type {content_type!r}. "
+                    "Use application/json for a ResolveRequest envelope, "
+                    "or application/yaml / application/toml / text/plain "
+                    "for a raw environment file body."
+                ),
+                "supported": [
+                    "application/json",
+                    *sorted(RAW_CONTENT_TYPE_EXTENSIONS),
+                ],
+            },
+            status_code=HTTP_400_BAD_REQUEST,
+        )
 
     if file_content is not None:
         try:
             file_specs, file_channels = parse_file_content(
-                file_content, filename
+                file_content, file_name
             )
         except ValueError as exc:
             return Response(

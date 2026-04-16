@@ -6,7 +6,10 @@ not go through this module.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+from conda.base.context import context
 from conda.models.environment import Environment
 
 from conda_presto.exceptions import UnknownFormatError
@@ -56,8 +59,6 @@ def env_with_records(make_package_record):
     ],
 )
 def test_media_type_for(format_name, expected):
-    from conda.base.context import context
-
     exporter = (
         context.plugin_manager.get_environment_exporter_by_format(
             format_name
@@ -68,16 +69,12 @@ def test_media_type_for(format_name, expected):
 
 def test_media_type_for_unknown_extension_falls_back_to_text():
     """Extensions not in the lookup table get plain text."""
-    from types import SimpleNamespace
-
     fake = SimpleNamespace(default_filenames=("output.xyz",))
     assert media_type_for(fake) == "text/plain; charset=utf-8"
 
 
 def test_media_type_for_no_default_filenames():
     """Exporters without default_filenames get plain text."""
-    from types import SimpleNamespace
-
     fake = SimpleNamespace(default_filenames=())
     assert media_type_for(fake) == "text/plain; charset=utf-8"
 
@@ -144,8 +141,6 @@ def test_render_envs_dispatches_to_exporter_methods(
     monkeypatch, exporter_attrs, envs, expected
 ):
     """render_envs prefers multiplatform_export, falls back to export."""
-    from types import SimpleNamespace
-
     attrs = {
         "multiplatform_export": None,
         "export": None,
@@ -163,8 +158,6 @@ def test_render_envs_dispatches_to_exporter_methods(
 
 def test_render_envs_no_export_method_raises(monkeypatch):
     """An exporter with neither method raises UnknownFormatError."""
-    from types import SimpleNamespace
-
     fake = SimpleNamespace(
         multiplatform_export=None, export=None,
         default_filenames=("out.txt",),

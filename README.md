@@ -207,16 +207,23 @@ objects only, any solver failure on the `?format=` path returns HTTP
 500 instead of a partial response — use the default (no `format` query
 param) when you want per-platform error details.
 
-Pipeline-style: `environment.yml` → remote solve → `pixi.lock` → local
-`conda env create`, with `jq -Rs` JSON-encoding the file body:
+`POST /resolve` dispatches on `Content-Type`: `application/json`
+expects a `ResolveRequest` envelope, while `application/yaml`,
+`application/toml`, or `text/plain` treat the body as a raw
+environment file (parsed by conda's env-spec plugin registry).
+That makes the full pipeline `environment.yml` → remote solve →
+`pixi.lock` → local `conda env create` a plain `curl` one-liner:
 
 ```bash
-jq -Rs '{file: ., platforms: ["linux-64"]}' environment.yml \
-  | curl -sS -X POST 'http://localhost:8000/resolve?format=pixi-lock-v6' \
-         -H 'Content-Type: application/json' --data-binary @- \
+curl -sS --data-binary @environment.yml \
+  -H 'Content-Type: application/yaml' \
+  'http://localhost:8000/resolve?format=pixi-lock-v6&platform=linux-64' \
   > pixi.lock
 conda env create -n demo -f pixi.lock
 ```
+
+Pass `?filename=` if the Content-Type is too generic (e.g. to force
+`pixi.lock` parsing for a generic YAML upload).
 
 ### `GET /health`
 

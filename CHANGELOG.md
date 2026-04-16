@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `POST /resolve` now dispatches on `Content-Type`: `application/json`
+  (or missing) keeps the existing `ResolveRequest` envelope behavior;
+  `application/yaml` / `application/x-yaml` / `text/yaml` /
+  `application/toml` / `text/plain` treat the body as a raw
+  environment file, parsed through conda's env-spec plugin registry.
+  Specs, channels, platforms, and format come from query params on
+  the raw-body dispatch; `?filename=` picks the parser when
+  Content-Type alone is ambiguous.  Unsupported Content-Types return
+  HTTP 400 with the list of accepted types.  This makes
+  `curl --data-binary @environment.yml -H 'Content-Type: application/yaml'
+  '.../resolve?format=pixi-lock-v6&platform=linux-64'` a one-liner —
+  no `jq` or JSON wrapping required.
 - HTTP API `?format=<name>` query parameter on `GET`/`POST /resolve`
   routes the response through conda's exporter plugin registry.  The
   CLI (`--format`) and HTTP API share the same `render_envs` helper

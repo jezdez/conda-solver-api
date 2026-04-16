@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import threading
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 
+import msgspec
 import pytest
+from conda.base.context import context
+from conda.exceptions import PackagesNotFoundError, UnsatisfiableError
 from conda.models.environment import Environment
 from conda.models.records import PackageRecord
 
+import conda_presto.resolve as resolve_module
 from conda_presto.resolve import (
     ResolvedPackage,
     SolveResult,
@@ -69,8 +73,6 @@ def test_resolved_package_from_record(record_fixture, field, expected, request):
 def test_solve_result_msgspec_json_roundtrip(sample_resolved_package):
     """``list[SolveResult]`` serializes via msgspec.json to the shape
     consumed by both the CLI default output and the HTTP API."""
-    import msgspec
-
     result = SolveResult(
         platform="linux-64", packages=[sample_resolved_package], error=None
     )
@@ -99,8 +101,6 @@ def test_solve_result_msgspec_json_roundtrip(sample_resolved_package):
 
 
 def test_solve_result_error_serializes(sample_resolved_package):
-    import msgspec
-
     result = SolveResult(
         platform="linux-64", packages=[], error="solver failed"
     )
@@ -110,8 +110,6 @@ def test_solve_result_error_serializes(sample_resolved_package):
 
 
 def test_configure_context_sets_json():
-    from conda.base.context import context
-
     configure_context()
     assert context.json is True
 
@@ -150,8 +148,6 @@ def test_run_solver_returns_sorted_records():
 
 
 def test_run_solver_unsatisfiable():
-    from conda.exceptions import PackagesNotFoundError, UnsatisfiableError
-
     with pytest.raises((UnsatisfiableError, PackagesNotFoundError)):
         run_solver(
             channels=("conda-forge",),
@@ -224,8 +220,6 @@ def test_solve(platforms):
     ],
 )
 def test_defaults_to_current_platform(fn_name):
-    from conda.base.context import context
-
     fn = {"solve": solve, "solve_environments": solve_environments}[fn_name]
     results = fn(["conda-forge"], ["zlib"])
     assert len(results) == 1
@@ -311,8 +305,6 @@ def test_solve_one_platform_generic_exception_sanitized(monkeypatch):
 
 def test_solve_one_platform_known_exception_surfaces_detail(monkeypatch):
     """Known solver errors (UnsatisfiableError/PackagesNotFoundError) surface detail."""
-    from conda.exceptions import PackagesNotFoundError
-
     def raise_pnf(*a, **kw):
         raise PackagesNotFoundError(["__nonexistent__"])
 
@@ -341,8 +333,6 @@ def test_solve_result_error_sanitizes_generic():
 )
 def test_dispatch_on_error(platforms, monkeypatch):
     """dispatch catches errors when on_error is provided."""
-    from concurrent.futures import ThreadPoolExecutor
-
     monkeypatch.setattr(
         "conda_presto.resolve.get_process_pool",
         lambda: ThreadPoolExecutor(max_workers=2),
@@ -372,8 +362,6 @@ def test_dispatch_on_error(platforms, monkeypatch):
 )
 def test_dispatch_no_error_propagates(platforms, monkeypatch):
     """dispatch raises when on_error is None."""
-    from concurrent.futures import ThreadPoolExecutor
-
     monkeypatch.setattr(
         "conda_presto.resolve.get_process_pool",
         lambda: ThreadPoolExecutor(max_workers=2),
@@ -393,8 +381,6 @@ def test_dispatch_no_error_propagates(platforms, monkeypatch):
 
 def test_run_solver_no_backend(monkeypatch):
     """run_solver raises RuntimeError if no solver backend is found."""
-    from conda.base.context import context
-
     monkeypatch.setattr(
         context.plugin_manager,
         "get_cached_solver_backend",
@@ -423,29 +409,23 @@ def test_configure_platform_virtual_package_overrides(
     platform, expected_keys, monkeypatch
 ):
     """Each platform family gets its own set of virtual package overrides."""
-    from conda.base.context import context
-
-    import conda_presto.resolve as r
-
-    monkeypatch.setattr(r, "current_platform", None)
+    monkeypatch.setattr(resolve_module, "current_platform", None)
     with platform_lock:
         configure_platform(platform)
     overrides = context._cache_.get("_override_virtual_packages", {})
     assert set(overrides.keys()) == expected_keys
-    monkeypatch.setattr(r, "current_platform", None)
+    monkeypatch.setattr(resolve_module, "current_platform", None)
 
 
 def test_shutdown_process_pool_is_idempotent():
     """shutdown_process_pool clears the global and is safe to call twice."""
-    import conda_presto.resolve as r
-
     try:
         pool = get_process_pool()
-        assert r.process_pool is pool
+        assert resolve_module.process_pool is pool
         shutdown_process_pool()
-        assert r.process_pool is None
+        assert resolve_module.process_pool is None
         shutdown_process_pool()
-        assert r.process_pool is None
+        assert resolve_module.process_pool is None
     finally:
         # Leave a fresh pool for any subsequent tests.
         get_process_pool()
@@ -461,8 +441,6 @@ def test_warmup_including_pool(monkeypatch):
 
     class FakePool:
         def submit(self, fn, *args):
-            from concurrent.futures import Future
-
             f = Future()
             try:
                 result = fn(*args)
