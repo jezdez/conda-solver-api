@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-16
+
 ### Added
 
 - `POST /resolve` now dispatches on `Content-Type`: `application/json`
@@ -246,6 +248,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependabot configuration for GitHub Actions version updates.
 - BSD 3-Clause license.
 
+[0.4.0]: https://github.com/jezdez/conda-presto/releases/tag/v0.4.0
 [0.3.0]: https://github.com/jezdez/conda-presto/releases/tag/v0.3.0
 [0.2.1]: https://github.com/jezdez/conda-presto/releases/tag/v0.2.1
 [0.2.0]: https://github.com/jezdez/conda-presto/releases/tag/v0.2.0
