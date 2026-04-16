@@ -23,6 +23,7 @@ def test_app():
             version="test",
             path="/",
         ),
+        request_max_body_size=1_024 * 1_024,
     )
     app.state.solver_limiter = None
     return app
@@ -300,6 +301,16 @@ async def test_resolve_get_no_specs(client):
     resp = await client.get("/resolve")
     assert resp.status_code == 400
     assert "Provide specs or file" in resp.json()["error"]
+
+
+@pytest.mark.anyio
+async def test_resolve_body_too_large(client):
+    resp = await client.post(
+        "/resolve",
+        content=b"x" * (1_024 * 1_024 + 1),
+        headers={"content-type": "application/json"},
+    )
+    assert resp.status_code == 413
 
 
 @pytest.mark.anyio
