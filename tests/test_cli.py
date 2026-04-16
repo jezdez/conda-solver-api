@@ -3,15 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from types import SimpleNamespace
 
 import pytest
 
 from conda_presto.cli import (
-    _export_environments,
-    _load_files,
     cmd_serve,
     execute,
+    load_files,
     main,
 )
 
@@ -42,17 +40,19 @@ def test_solve_with_file(
         "-f", str(environment_yml_path), "-p", "linux-64", *extra_args
     )
     data = json.loads(out)
-    assert data["platform"] == "linux-64"
-    assert expected_name in [p["name"] for p in data["packages"]]
+    assert isinstance(data, list) and len(data) == 1
+    assert data[0]["platform"] == "linux-64"
+    assert expected_name in [p["name"] for p in data[0]["packages"]]
 
 
 def test_solve_with_inline_specs(run_cli):
     out = run_cli("-c", "conda-forge", "-p", "linux-64", "zlib")
     data = json.loads(out)
-    assert data["platform"] == "linux-64"
-    names = [p["name"] for p in data["packages"]]
+    assert isinstance(data, list) and len(data) == 1
+    assert data[0]["platform"] == "linux-64"
+    names = [p["name"] for p in data[0]["packages"]]
     assert "zlib" in names
-    pkg = data["packages"][0]
+    pkg = data[0]["packages"][0]
     assert "sha256" in pkg
     assert "url" in pkg
     assert "channel" in pkg
@@ -80,6 +80,104 @@ def test_solve_output_format(run_cli, fmt, assertion):
     assert assertion in out
 
 
+@pytest.mark.crossplatform
+def test_solve_multi_platform_default_is_single_array(run_cli):
+    """Multi-platform CLI solve emits a single JSON array of SolveResult
+    structs, byte-identical to what the HTTP API returns."""
+    out = run_cli(
+        "-c", "conda-forge",
+        "-p", "linux-64",
+        "-p", "osx-arm64",
+        "zlib",
+    )
+    data = json.loads(out)
+    assert isinstance(data, list)
+    assert len(data) == 2
+    platforms = {entry["platform"] for entry in data}
+    assert platforms == {"linux-64", "osx-arm64"}
+    for entry in data:
+        assert entry["error"] is None
+        names = [p["name"] for p in entry["packages"]]
+        assert "zlib" in names
+
+
+@pytest.mark.parametrize(
+    "fmt, version_key, version_value, package_marker",
+    [
+        pytest.param(
+            "pixi-lock-v6", "version", 6, "zlib-", id="pixi-lock-v6"
+        ),
+        pytest.param(
+            "conda-lock-v1", "version", 1, "zlib", id="conda-lock-v1"
+        ),
+    ],
+)
+def test_convert_environment_yml_structural(
+    run_cli, tmp_path, fmt, version_key, version_value, package_marker
+):
+    """``environment.yml`` -> solve -> lockfile structural sanity check."""
+    import yaml
+
+    env_yml = tmp_path / "environment.yml"
+    env_yml.write_text(
+        "channels:\n  - conda-forge\n"
+        "dependencies:\n  - zlib\n"
+    )
+
+    out = run_cli(
+        "-f", str(env_yml), "-p", "linux-64", "--format", fmt
+    )
+
+    data = yaml.safe_load(out)
+    assert data[version_key] == version_value
+    assert package_marker in out
+
+
+def test_pipeline_environment_yml_to_conda_env_create(tmp_path):
+    """Shell-style one-liner pipeline, end to end:
+
+    ``environment.yml`` --[``conda presto --format pixi-lock-v6``]-->
+    ``pixi.lock`` --[``conda env create --dry-run``]--> solved env.
+
+    Proves that a pixi.lock produced by conda-presto is consumable by
+    conda's env-spec plugin registry (via ``conda-lockfiles``) without
+    touching any plugin internals. Exercises only conda's public CLI.
+    """
+    import subprocess
+    import sys
+
+    from conda.base.context import context
+
+    env_yml = tmp_path / "environment.yml"
+    env_yml.write_text(
+        "channels:\n  - conda-forge\n"
+        "dependencies:\n  - zlib\n"
+    )
+    lock = tmp_path / "pixi.lock"
+
+    with lock.open("w") as f:
+        subprocess.run(
+            [
+                sys.executable, "-m", "conda", "presto",
+                "-f", str(env_yml),
+                "-p", context.subdir,
+                "--format", "pixi-lock-v6",
+            ],
+            stdout=f, check=True,
+        )
+
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "conda", "env", "create",
+            "--dry-run", "--yes",
+            "-n", "conda_presto_pipeline_demo",
+            "-f", str(lock),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    assert "zlib" in result.stdout
+
+
 def test_solve_multiple_files(run_cli, tmp_path):
     file1 = tmp_path / "env1.yml"
     file1.write_text(
@@ -95,7 +193,8 @@ def test_solve_multiple_files(run_cli, tmp_path):
         "-f", str(file1), "-f", str(file2), "-p", "linux-64"
     )
     data = json.loads(out)
-    names = [p["name"] for p in data["packages"]]
+    assert isinstance(data, list) and len(data) == 1
+    names = [p["name"] for p in data[0]["packages"]]
     assert "zlib" in names
     assert "bzip2" in names
 
@@ -117,7 +216,7 @@ def test_load_files_unhandled(tmp_path, monkeypatch, capsys):
         lambda fpath: FakePlugin(),
     )
     with pytest.raises(SystemExit, match="1"):
-        _load_files([str(bad)])
+        load_files([str(bad)])
     assert "No environment spec plugin can handle" in capsys.readouterr().err
 
 
@@ -143,38 +242,33 @@ def test_cmd_serve(monkeypatch):
     assert called == [("conda_presto.app:app", "0.0.0.0", 9000)]
 
 
-@pytest.mark.parametrize(
-    "exporter_attrs, envs, expected_result, exits",
-    [
-        pytest.param(
-            {"multiplatform_export": lambda e: f"multi:{len(e)}"},
-            ["env1", "env2"],
-            "multi:2",
-            False,
-            id="multiplatform",
-        ),
-        pytest.param(
-            {"multiplatform_export": None, "export": None},
-            ["env1"],
-            None,
-            True,
-            id="no-method",
-        ),
-    ],
-)
-def test_export_environments_edge_cases(
-    monkeypatch, capsys, exporter_attrs, envs, expected_result, exits
-):
-    attrs = {"multiplatform_export": None, "export": None, **exporter_attrs}
-    fake_exporter = SimpleNamespace(**attrs)
+def test_cmd_solve_unknown_format_exits(run_cli, monkeypatch, capsys):
+    """cmd_solve surfaces an UnknownFormatError as exit 1 + stderr."""
     monkeypatch.setattr(
-        "conda_presto.cli.context.plugin_manager"
-        ".get_environment_exporter_by_format",
-        lambda fmt: fake_exporter,
+        "conda_presto.cli.solve_environments",
+        lambda channels, deps, platforms: [],
     )
-    if exits:
-        with pytest.raises(SystemExit, match="1"):
-            _export_environments(envs, "test-fmt")
-        assert "No export method" in capsys.readouterr().err
-    else:
-        assert _export_environments(envs, "test-fmt") == expected_result
+    with pytest.raises(SystemExit, match="1"):
+        run_cli(
+            "-c", "conda-forge", "-p", "linux-64",
+            "--format", "no-such-format", "zlib",
+        )
+    assert "Unknown format 'no-such-format'" in capsys.readouterr().err
+
+
+def test_cmd_solve_format_solver_error_exits(run_cli, monkeypatch, capsys):
+    """cmd_solve --format surfaces known solver errors cleanly (no traceback)."""
+    from conda.exceptions import PackagesNotFoundError
+
+    def raise_pnf(*a, **kw):
+        raise PackagesNotFoundError(["__nonexistent__"])
+
+    monkeypatch.setattr("conda_presto.cli.solve_environments", raise_pnf)
+    with pytest.raises(SystemExit, match="1"):
+        run_cli(
+            "-c", "conda-forge", "-p", "linux-64",
+            "--format", "explicit", "__nonexistent__",
+        )
+    err = capsys.readouterr().err
+    assert "Solver error:" in err
+    assert "__nonexistent__" in err

@@ -4,9 +4,12 @@ Exposes ``configure_parser`` and ``execute`` for the conda plugin hook
 (``conda presto ...``), and ``main`` for standalone use via the
 ``conda-presto`` script entry point.
 
-The default output format is ``resolve-json``, a custom exporter that
-includes full package metadata (sha256, urls, sizes, etc.).  Use
-``--format`` to select other conda exporter formats (explicit, yaml).
+Default output is a pretty-printed JSON array of ``SolveResult``
+objects (one entry per platform), produced directly by ``msgspec.json``
+— byte-identical to what the HTTP API returns on ``/resolve``.
+Pass ``--format <name>`` to route through conda's exporter plugins
+(``explicit``, ``environment-yaml``, ``conda-lock-v1``,
+``rattler-lock-v6``/``pixi-lock-v6``, …) instead.
 
 Resolve is the default action.  Use ``--serve`` to start the HTTP API
 server instead.  The ``--host`` and ``--port`` defaults can be set via
@@ -21,18 +24,18 @@ from __future__ import annotations
 import argparse
 import sys
 
+import msgspec
 from conda.base.context import context
 from conda.cli.helpers import (
     add_parser_channels,
     add_parser_networking,
     add_parser_solver,
 )
-from conda.models.environment import Environment
 
 from .config import DEFAULT_CHANNELS, DEFAULT_HOST, DEFAULT_PORT
-from .resolve import solve_environments
-
-DEFAULT_FORMAT = "resolve-json"
+from .exceptions import SAFE_ERROR_TYPES, UnknownFormatError
+from .exporter import render_envs
+from .resolve import solve, solve_environments
 
 
 def configure_parser(parser: argparse.ArgumentParser):
@@ -69,12 +72,13 @@ def configure_parser(parser: argparse.ArgumentParser):
     output_group = parser.add_argument_group("Output Format")
     output_group.add_argument(
         "--format",
-        default=DEFAULT_FORMAT,
+        default=None,
         dest="output_format",
         metavar="FORMAT",
-        help="Output format using conda's export plugins. "
-        "'resolve-json' (default) outputs full package metadata "
-        "with sha256, urls, etc. Also: explicit, yaml, requirements.",
+        help="Route output through a conda exporter plugin "
+        "(e.g. explicit, environment-yaml, conda-lock-v1, "
+        "rattler-lock-v6).  Omit for the default pretty-printed JSON "
+        "output, which matches the HTTP API's response shape.",
     )
     server_group = parser.add_argument_group("HTTP Server")
     server_group.add_argument(
@@ -103,14 +107,16 @@ def execute(args: argparse.Namespace):
         cmd_solve(args)
 
 
-def _load_files(
+def load_files(
     files: list[str],
 ) -> tuple[list[str], list[str]]:
-    """Parse input files using conda's env spec plugin system.
+    """Parse input files via conda's env-spec plugin registry.
 
     Returns accumulated *(dependencies, channels)* from all files.
-    Each file is detected by conda's plugin registry and parsed into
-    a conda ``Environment`` model.
+    Each file is routed through ``detect_environment_specifier`` and
+    parsed into a conda ``Environment`` model, so any installed
+    env-spec plugin (environment.yml, requirements.txt,
+    ``pixi.lock`` via conda-lockfiles, …) works automatically.
     """
     deps: list[str] = []
     channels: list[str] = []
@@ -130,31 +136,11 @@ def _load_files(
     return deps, channels
 
 
-def _export_environments(
-    envs: list[Environment], format_name: str
-) -> str:
-    """Format environments using conda's exporter plugins."""
-    exporter = context.plugin_manager.get_environment_exporter_by_format(
-        format_name
-    )
-
-    if exporter.multiplatform_export and len(envs) > 1:
-        return exporter.multiplatform_export(envs)
-    elif exporter.export:
-        return "\n".join(exporter.export(env) for env in envs)
-    else:
-        print(
-            f"No export method for format: {format_name}",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-
-
 def cmd_solve(args: argparse.Namespace):
     """Resolve packages and write output to stdout."""
     context.__init__(argparse_args=args)
 
-    file_deps, file_channels = _load_files(args.files)
+    file_deps, file_channels = load_files(args.files)
 
     specs = [s.strip("\"'") for s in args.specs]
     deps = file_deps + specs
@@ -170,14 +156,33 @@ def cmd_solve(args: argparse.Namespace):
     if not channels or channels == ["defaults"]:
         channels = file_channels or list(DEFAULT_CHANNELS)
 
-    envs = solve_environments(channels, deps, args.platforms or None)
+    platforms = args.platforms or None
 
-    content = _export_environments(envs, args.output_format)
-    sys.stdout.write(content.rstrip() + "\n")
+    if args.output_format is None:
+        results = solve(channels, deps, platforms)
+        body = msgspec.json.format(msgspec.json.encode(results), indent=2)
+        sys.stdout.buffer.write(body + b"\n")
+    else:
+        try:
+            envs = solve_environments(channels, deps, platforms)
+            body, _ = render_envs(envs, args.output_format)
+        except UnknownFormatError as exc:
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(1)
+        except SAFE_ERROR_TYPES as exc:
+            print(f"Solver error: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        sys.stdout.write(body.rstrip() + "\n")
 
 
 def cmd_serve(args: argparse.Namespace):
-    """Start the HTTP API server via uvicorn."""
+    """Start the HTTP API server via uvicorn.
+
+    Workaround: ``uvicorn`` is an optional dependency (pixi
+    ``server`` feature only).  Importing it at module top would
+    break ``conda presto`` as a CLI when the server deps aren't
+    installed, so it is imported here only when actually needed.
+    """
     import uvicorn
 
     uvicorn.run(

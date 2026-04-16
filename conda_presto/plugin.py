@@ -1,17 +1,15 @@
 """Conda plugin registration for conda-presto.
 
 This module is imported on every ``conda`` invocation via the entry
-point system.  Only ``hookimpl`` and type imports are at module level;
-the CLI module is lazily imported inside the hook to keep the startup
-overhead under 1 ms (conda loads all registered plugins on every
-command, including ``conda activate`` and ``conda --version``).
+point system.  See :func:`conda_subcommands` for why the CLI module
+is imported lazily inside the hook rather than at module top.
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 from conda.plugins import hookimpl
-from conda.plugins.types import CondaEnvironmentExporter, CondaSubcommand
+from conda.plugins.types import CondaSubcommand
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -19,7 +17,15 @@ if TYPE_CHECKING:
 
 @hookimpl
 def conda_subcommands() -> Iterable[CondaSubcommand]:
-    """Register ``conda presto`` as a conda subcommand."""
+    """Register ``conda presto`` as a conda subcommand.
+
+    Workaround: importing ``.cli`` eagerly at module top costs
+    ~170 ms (msgspec + conda_rattler_solver + conda.cli.helpers).
+    Conda loads every registered plugin on every invocation —
+    including ``conda --version`` and ``conda activate`` — so we
+    defer the cost to the one hook call where the CLI is actually
+    needed.
+    """
     from .cli import configure_parser, execute
 
     yield CondaSubcommand(
@@ -30,18 +36,4 @@ def conda_subcommands() -> Iterable[CondaSubcommand]:
         ),
         action=execute,
         configure_parser=configure_parser,
-    )
-
-
-@hookimpl
-def conda_environment_exporters() -> Iterable[CondaEnvironmentExporter]:
-    """Register the ``resolve-json`` exporter format."""
-    from .exporter import export_resolve_json
-
-    yield CondaEnvironmentExporter(
-        name="resolve-json",
-        aliases=(),
-        default_filenames=(),
-        export=export_resolve_json,
-        description="Full package metadata with sha256, urls, sizes",
     )

@@ -19,16 +19,21 @@ Performance notes:
       so they serialize cheaply for cross-process dispatch.
     - ``ResolvedPackage`` and ``SolveResult`` are ``msgspec.Struct``
       subclasses, which are faster to instantiate and use less memory
-      than dataclasses. Litestar encodes them natively to JSON without
-      intermediate dicts. ``to_dict()`` is kept for the CLI/exporter path.
+      than dataclasses.  Both the HTTP API and the CLI's default
+      output encode them directly via ``msgspec.json`` — there is no
+      intermediate ``dict`` conversion.  The CLI's ``--format`` path
+      feeds conda's exporter plugins with ``Environment`` objects
+      (via ``solve_environments``) instead.
 
 Security notes:
     - ``run_solver`` is protected by ``platform_lock`` so that
       concurrent threads (from ``anyio.to_thread``) cannot race on the
       conda ``context`` singleton state.
-    - Solver errors are caught and returned as error strings in the
-      ``SolveResult`` rather than propagated as exceptions, preventing
-      internal stack traces from leaking to callers.
+    - Solver errors are caught and wrapped via
+      :func:`conda_presto.exceptions.safe_error_message` so that only
+      an allow-list of known exception types surfaces its detail to
+      API clients; everything else returns a generic message.  Full
+      detail is still logged server-side.
 """
 from __future__ import annotations
 
@@ -40,22 +45,34 @@ from operator import attrgetter
 
 import msgspec
 from conda.base.context import context
-from conda.exceptions import PackagesNotFoundError, UnsatisfiableError
 from conda.models.environment import Environment
 from conda.models.match_spec import MatchSpec
 from conda.models.records import PackageRecord
+from conda_rattler_solver.index import RattlerIndexHelper
+from conda_rattler_solver.state import SolverInputState, SolverOutputState
 
-from .config import GLIBC_VERSION, LINUX_VERSION, MAX_WORKERS, OSX_VERSION
+from .config import (
+    GLIBC_VERSION,
+    LINUX_VERSION,
+    MAX_WORKERS,
+    OSX_VERSION,
+    WIN_VERSION,
+)
+from .exceptions import safe_error_message
 
 log = logging.getLogger(__name__)
 
 # Virtual package overrides for cross-platform solving.
-# Keyed by platform prefix → {package_name: version}.
+# Keyed by platform prefix -> {package_name: version}.
 # Versions are configurable via CONDA_PRESTO_GLIBC_VERSION,
-# CONDA_PRESTO_LINUX_VERSION, and CONDA_PRESTO_OSX_VERSION.
+# CONDA_PRESTO_LINUX_VERSION, CONDA_PRESTO_OSX_VERSION, and
+# CONDA_PRESTO_WIN_VERSION.  ``__win`` is usually unversioned on
+# conda-forge; we still provide a value to keep the override dict shape
+# consistent across platforms.
 VIRTUAL_PACKAGES: dict[str, dict[str, str]] = {
     "linux": {"glibc": GLIBC_VERSION, "linux": LINUX_VERSION},
     "osx": {"osx": OSX_VERSION},
+    "win": {"win": WIN_VERSION},
 }
 
 NATIVE_SUBDIR: str = context.subdir
@@ -71,10 +88,12 @@ index_cache: dict[tuple[tuple[str, ...], str], object] = {}
 def configure_platform(platform: str):
     """Point conda's context at *platform* for cross-platform solving.
 
-    Sets ``context._subdir`` and ``context.override_virtual_packages``
-    directly via the descriptor cache, avoiding ``os.environ`` mutation.
-    This eliminates a class of thread-safety issues: env-var writes are
-    process-global, but the cache is a plain dict on the singleton.
+    Workaround: conda has no public API to re-target ``context.subdir``
+    for in-process use without mutating ``os.environ``.  We therefore
+    write to ``context._cache_`` directly — that's what
+    ``context.__init__(argparse_args=...)`` does internally.  It
+    avoids process-global env-var writes (which would not be
+    thread-safe under the HTTP server's concurrent requests).
 
     Callers must hold ``platform_lock`` when calling this function,
     since the context singleton is shared across threads.
@@ -142,27 +161,6 @@ class ResolvedPackage(msgspec.Struct):
             constrains=tuple(record.constrains) if record.constrains else (),
         )
 
-    def to_dict(self) -> dict:
-        """Serialize to a plain dict for JSON/CLI output.
-
-        Used by the CLI and exporter paths. The HTTP API bypasses this
-        via Litestar's native msgspec encoding.
-        """
-        return {
-            "name": self.name,
-            "version": self.version,
-            "build": self.build,
-            "build_number": self.build_number,
-            "channel": self.channel,
-            "subdir": self.subdir,
-            "url": self.url,
-            "sha256": self.sha256,
-            "md5": self.md5,
-            "size": self.size,
-            "depends": list(self.depends),
-            "constrains": list(self.constrains),
-        }
-
 
 class SolveResult(msgspec.Struct):
     """The result of a solve operation for a single platform.
@@ -175,20 +173,16 @@ class SolveResult(msgspec.Struct):
     packages: list[ResolvedPackage]
     error: str | None = None
 
-    def to_dict(self) -> dict:
-        """Serialize to a plain dict for JSON/CLI output."""
-        return {
-            "platform": self.platform,
-            "packages": [p.to_dict() for p in self.packages],
-            "error": self.error,
-        }
 
 def configure_context():
     """Set conda context options for fast, quiet solves.
 
     Sets ``context.json`` (no-op spinner, no progress noise) and
-    ensures the rattler solver backend is selected.  Both are set
-    directly on the context singleton rather than via env vars.
+    ensures the rattler solver backend is selected.
+
+    Workaround: conda exposes neither as kwargs to the plugin-invoked
+    CLI, so we set them directly on the singleton's cache (same
+    approach as :func:`configure_platform`).
     """
     global context_configured
     if context_configured:
@@ -207,8 +201,6 @@ def build_index(
     ``index_lock`` makes the check-then-build atomic, so only one
     thread ever builds a given index — no thundering herd.
     """
-    from conda_rattler_solver.index import RattlerIndexHelper
-
     key = (channels, platform)
     with index_lock:
         cached = index_cache.get(key)
@@ -246,9 +238,15 @@ def run_solver(
 
     Returns records sorted by name.  Raises on solver failure so
     callers can handle errors in their own way.
-    """
-    from conda_rattler_solver.state import SolverInputState, SolverOutputState
 
+    Workaround: the public ``Solver.solve_final_state`` API loads
+    ``PrefixData`` from disk (even for a non-existent prefix), which
+    costs ~100 ms per call and has nothing to add for a dry-run.
+    We bypass it by driving the conda-rattler-solver
+    ``_solving_loop`` directly with a pre-built index.  This reaches
+    into the solver plugin's internals, so this call site is the one
+    place in conda-presto that couples to a specific solver backend.
+    """
     with platform_lock:
         configure_platform(platform)
         configure_context()
@@ -324,11 +322,6 @@ def dispatch[T](
     return [results[p] for p in platforms]
 
 
-# ---------------------------------------------------------------------------
-# Server path — lightweight wrapper types for fast JSON and low memory
-# ---------------------------------------------------------------------------
-
-
 def solve_one_platform(
     channels: tuple[str, ...],
     dependencies: list[str],
@@ -341,24 +334,22 @@ def solve_one_platform(
     """
     try:
         records = run_solver(channels, dependencies, platform)
-    except (
-        UnsatisfiableError,
-        PackagesNotFoundError,
-        RuntimeError,
-    ) as exc:
-        return SolveResult(platform=platform, packages=[], error=str(exc))
     except Exception as exc:
         log.warning("Solver error for %s: %s", platform, exc)
-        return SolveResult(platform=platform, packages=[], error=str(exc))
+        return SolveResult(
+            platform=platform, packages=[], error=safe_error_message(exc)
+        )
 
     packages = [ResolvedPackage.from_record(r) for r in records]
     return SolveResult(platform=platform, packages=packages)
 
 
 def solve_result_error(platform: str, exc: Exception) -> SolveResult:
-    """Wrap an exception as a ``SolveResult`` with an error message."""
+    """Wrap an exception as a ``SolveResult`` with a sanitized message."""
     log.warning("Solver dispatch error for %s: %s", platform, exc)
-    return SolveResult(platform=platform, packages=[], error=str(exc))
+    return SolveResult(
+        platform=platform, packages=[], error=safe_error_message(exc)
+    )
 
 
 def solve(
@@ -379,11 +370,6 @@ def solve(
         platforms or [NATIVE_SUBDIR],
         on_error=solve_result_error,
     )
-
-
-# ---------------------------------------------------------------------------
-# CLI path — conda-native Environment objects, no intermediate types
-# ---------------------------------------------------------------------------
 
 
 def solve_one_environment(
@@ -444,6 +430,20 @@ def get_process_pool() -> ProcessPoolExecutor:
         if process_pool is None:
             process_pool = ProcessPoolExecutor(max_workers=MAX_WORKERS)
         return process_pool
+
+
+def shutdown_process_pool() -> None:
+    """Shut down the process pool if it was started.
+
+    Idempotent; safe to call from Litestar's ``on_shutdown`` hook.
+    Uses ``wait=False`` and ``cancel_futures=True`` so shutdown doesn't
+    block on in-flight solves during server teardown.
+    """
+    global process_pool
+    with pool_lock:
+        if process_pool is not None:
+            process_pool.shutdown(wait=False, cancel_futures=True)
+            process_pool = None
 
 
 def warmup_indexes(channels: list[str], platforms: list[str]):

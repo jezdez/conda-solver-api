@@ -20,6 +20,7 @@ from conda_presto.resolve import (
     index_cache,
     platform_lock,
     run_solver,
+    shutdown_process_pool,
     solve,
     solve_environments,
     solve_one_platform,
@@ -65,13 +66,23 @@ def test_resolved_package_from_record(record_fixture, field, expected, request):
     assert getattr(pkg, field) == expected
 
 
-def test_resolved_package_to_dict(sample_resolved_package):
-    d = sample_resolved_package.to_dict()
-    assert d["name"] == "zlib"
-    assert d["version"] == "1.3.1"
-    assert isinstance(d["depends"], list)
-    assert isinstance(d["constrains"], list)
-    assert set(d.keys()) == {
+def test_solve_result_msgspec_json_roundtrip(sample_resolved_package):
+    """``list[SolveResult]`` serializes via msgspec.json to the shape
+    consumed by both the CLI default output and the HTTP API."""
+    import msgspec
+
+    result = SolveResult(
+        platform="linux-64", packages=[sample_resolved_package], error=None
+    )
+    encoded = msgspec.json.encode([result])
+    decoded = msgspec.json.decode(encoded)
+    assert isinstance(decoded, list) and len(decoded) == 1
+    assert decoded[0]["platform"] == "linux-64"
+    assert decoded[0]["error"] is None
+    pkg = decoded[0]["packages"][0]
+    assert pkg["name"] == "zlib"
+    assert isinstance(pkg["depends"], list)
+    assert set(pkg.keys()) == {
         "name",
         "version",
         "build",
@@ -87,52 +98,15 @@ def test_resolved_package_to_dict(sample_resolved_package):
     }
 
 
-@pytest.mark.parametrize(
-    "depends_in, depends_out",
-    [
-        (("a >=1", "b"), ["a >=1", "b"]),
-        ((), []),
-    ],
-)
-def test_resolved_package_to_dict_depends_types(depends_in, depends_out):
-    pkg = ResolvedPackage(
-        name="x",
-        version="1",
-        build="h0",
-        build_number=0,
-        channel="",
-        subdir="",
-        url="",
-        sha256="",
-        md5="",
-        size=None,
-        depends=depends_in,
-        constrains=(),
+def test_solve_result_error_serializes(sample_resolved_package):
+    import msgspec
+
+    result = SolveResult(
+        platform="linux-64", packages=[], error="solver failed"
     )
-    assert pkg.to_dict()["depends"] == depends_out
-
-
-@pytest.mark.parametrize(
-    "packages, error, expected_error, expected_count",
-    [
-        pytest.param(
-            None, None, None, 1,
-            id="success",
-        ),
-        pytest.param(
-            [], "solver failed", "solver failed", 0,
-            id="error",
-        ),
-    ],
-)
-def test_solve_result_to_dict(
-    packages, error, expected_error, expected_count, sample_resolved_package
-):
-    pkgs = [sample_resolved_package] if packages is None else packages
-    result = SolveResult(platform="linux-64", packages=pkgs, error=error)
-    d = result.to_dict()
-    assert d["error"] == expected_error
-    assert len(d["packages"]) == expected_count
+    decoded = msgspec.json.decode(msgspec.json.encode(result))
+    assert decoded["error"] == "solver failed"
+    assert decoded["packages"] == []
 
 
 def test_configure_context_sets_json():
@@ -323,24 +297,38 @@ def test_cached_solve_produces_correct_results():
     assert names1 == names2
 
 
-def test_solve_one_platform_generic_exception(monkeypatch):
-    """Generic exceptions in solve_one_platform are caught as errors."""
+def test_solve_one_platform_generic_exception_sanitized(monkeypatch):
+    """Generic exceptions return a generic message, not the raw str."""
     monkeypatch.setattr(
         "conda_presto.resolve.run_solver",
-        lambda *a: (_ for _ in ()).throw(TypeError("unexpected")),
+        lambda *a: (_ for _ in ()).throw(TypeError("/Users/secret/path")),
     )
     result = solve_one_platform(("conda-forge",), ["zlib"], "linux-64")
-    assert result.error is not None
-    assert "unexpected" in result.error
+    assert result.error == "Internal solver error"
+    assert "/Users/" not in (result.error or "")
     assert result.packages == []
 
 
-def test_solve_result_error_wraps_exception():
-    exc = ValueError("test error")
+def test_solve_one_platform_known_exception_surfaces_detail(monkeypatch):
+    """Known solver errors (UnsatisfiableError/PackagesNotFoundError) surface detail."""
+    from conda.exceptions import PackagesNotFoundError
+
+    def raise_pnf(*a, **kw):
+        raise PackagesNotFoundError(["__nonexistent__"])
+
+    monkeypatch.setattr("conda_presto.resolve.run_solver", raise_pnf)
+    result = solve_one_platform(("conda-forge",), ["__nonexistent__"], "linux-64")
+    assert result.error is not None
+    assert "__nonexistent__" in result.error
+
+
+def test_solve_result_error_sanitizes_generic():
+    """solve_result_error returns generic message for unknown exception types."""
+    exc = ValueError("/Users/secret/path")
     result = solve_result_error("linux-64", exc)
     assert isinstance(result, SolveResult)
     assert result.platform == "linux-64"
-    assert result.error == "test error"
+    assert result.error == "Internal solver error"
     assert result.packages == []
 
 
@@ -421,6 +409,46 @@ def test_warmup_indexes():
     warmup_indexes(["conda-forge"], ["linux-64"])
     assert (("conda-forge",), "linux-64") in index_cache
     clear_index_cache()
+
+
+@pytest.mark.parametrize(
+    "platform, expected_keys",
+    [
+        pytest.param("linux-64", {"glibc", "linux"}, id="linux"),
+        pytest.param("osx-arm64", {"osx"}, id="osx"),
+        pytest.param("win-64", {"win"}, id="win"),
+    ],
+)
+def test_configure_platform_virtual_package_overrides(
+    platform, expected_keys, monkeypatch
+):
+    """Each platform family gets its own set of virtual package overrides."""
+    from conda.base.context import context
+
+    import conda_presto.resolve as r
+
+    monkeypatch.setattr(r, "current_platform", None)
+    with platform_lock:
+        configure_platform(platform)
+    overrides = context._cache_.get("_override_virtual_packages", {})
+    assert set(overrides.keys()) == expected_keys
+    monkeypatch.setattr(r, "current_platform", None)
+
+
+def test_shutdown_process_pool_is_idempotent():
+    """shutdown_process_pool clears the global and is safe to call twice."""
+    import conda_presto.resolve as r
+
+    try:
+        pool = get_process_pool()
+        assert r.process_pool is pool
+        shutdown_process_pool()
+        assert r.process_pool is None
+        shutdown_process_pool()
+        assert r.process_pool is None
+    finally:
+        # Leave a fresh pool for any subsequent tests.
+        get_process_pool()
 
 
 def test_warmup_including_pool(monkeypatch):

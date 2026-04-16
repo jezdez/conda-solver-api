@@ -5,6 +5,86 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- HTTP API `?format=<name>` query parameter on `GET`/`POST /resolve`
+  routes the response through conda's exporter plugin registry.  The
+  CLI (`--format`) and HTTP API share the same `render_envs` helper
+  so both surfaces expose the same set of formats.  Unknown formats
+  return HTTP 400 with the available-format list; solver failures on
+  this path return HTTP 500 (exporters can't represent per-platform
+  errors).
+- `conda-lockfiles >=0.1.1` is now a base dependency, so
+  `conda-lock-v1` and `rattler-lock-v6`/`pixi-lock-v6` are available
+  out of the box from both CLI and HTTP API.
+- Windows virtual package override via `CONDA_PRESTO_WIN_VERSION`
+  (default `0`) so cross-platform `win-*` solves get the same
+  treatment as Linux/macOS.
+- Per-request abuse/DoS caps: `CONDA_PRESTO_MAX_SPECS` (default 200,
+  returns 400), `CONDA_PRESTO_MAX_PLATFORMS` (default 8, returns 400),
+  and `CONDA_PRESTO_SOLVE_TIMEOUT_S` (default 60s, returns 504).
+- Process pool is shut down cleanly via Litestar's `on_shutdown` hook.
+
+### Changed
+
+- HTTP API now returns `SolveResult` / `ResolvedPackage`
+  `msgspec.Struct` instances directly; Litestar encodes them natively
+  to JSON without an intermediate `to_dict()` conversion.
+- CLI default output is now produced by `msgspec.json.encode` on the
+  same `list[SolveResult]` the HTTP API returns, pretty-printed via
+  `msgspec.json.format(..., indent=2)`.  CLI and HTTP emit identical
+  JSON (modulo whitespace), including a per-platform `"error"` field
+  (was previously absent from the CLI default).  This is an additive
+  change to the schema — correct JSON parsers continue to work.
+- POST body fields override query params based on presence, not
+  truthiness.  An explicit empty array in the body (e.g.
+  `{"platforms": []}`) now overrides the corresponding query param,
+  matching the documented behavior.
+- Solver error responses surface detail only for an allow-list of
+  known exception types (`UnsatisfiableError`, `PackagesNotFoundError`);
+  all other exceptions return a generic `"Internal solver error"`
+  message.  Full detail is still logged server-side.
+- Environment-variable parsing is centralized through `env_int` and
+  `env_list` helpers: list values now strip whitespace and drop empty
+  parts, and numeric values fail with a clear startup error instead of
+  a raw `ValueError` from `int()`.
+
+### Removed
+
+- `resolve-json` conda exporter plugin and the
+  `conda_environment_exporters` hook entry.  It duplicated the
+  `SolveResult`/`ResolvedPackage` msgspec shape for no good reason;
+  the CLI now produces that shape natively.  Minor user-visible
+  consequences:
+  * `conda presto --format resolve-json ...` now errors with
+    "Unknown format".  Fix: drop `--format`; the default output is
+    the same JSON shape (plus a `"error"` field per platform).
+  * HTTP `GET`/`POST /resolve?format=resolve-json` returns HTTP 400
+    for the same reason.  Drop the query parameter.
+  * `conda env export --format resolve-json` (invoked from plain
+    conda on an installed prefix, with conda-presto installed) no
+    longer works.  This was never conda-presto's intended use case.
+- `ResolvedPackage.to_dict` and `SolveResult.to_dict` methods: no
+  longer called anywhere; msgspec serializes the structs directly.
+
+### Fixed
+
+- HTTP `Content-Type` on `?format=` responses is now derived from the
+  exporter's `default_filenames` rather than a hand-coded format-name
+  table.  YAML-ish formats (`environment-yaml`, `conda-lock-v1`,
+  `rattler-lock-v6`/`pixi-lock-v6`) are now served as
+  `application/yaml` instead of `text/plain`.
+- Tempfile lifetime bug in `parse_file_content`: ``specs`` and
+  ``channels`` are now extracted while the temp file is still open,
+  preventing races with env-spec plugins that read the file lazily on
+  attribute access.
+- README documentation of the index-cache TTL was inaccurate.  The
+  on-disk repodata TTL (`CONDA_LOCAL_REPODATA_TTL`) and the in-memory
+  `RattlerIndexHelper` cache (no TTL, process-lifetime) are now
+  described separately.
+
 ## [0.3.0] - 2026-04-16
 
 ### Added

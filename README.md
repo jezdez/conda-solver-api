@@ -18,13 +18,14 @@ package lists programmatically.
 - Cross-platform solving (e.g. solve for `linux-64` from macOS) with
   automatic virtual package injection (`__glibc`, `__linux`, `__osx`)
 - Multi-platform solves run in parallel via `ProcessPoolExecutor`
-- Multiple output formats via conda exporter plugins (`--format`)
+- Single JSON shape across CLI and HTTP API, plus optional routing
+  through conda exporter plugins (`--format` / `?format=`)
 - Multiple `--file` inputs merged into a single solve
 - Conda-native CLI flags (`--override-channels`, `--solver`, `--offline`, etc.)
 - HTTP API with JSON input/output (Litestar + uvicorn)
 - Interactive API docs at `/` (Scalar UI) with auto-generated OpenAPI schema
 - Production middleware: brotli/gzip compression, CORS, request logging, rate limiting
-- Repodata index caching with TTL (300s) for ~50x faster repeat solves
+- Repodata caching (on-disk TTL + in-memory index) for ~50x faster repeat solves
 - Conda plugin: `conda presto` / `conda presto --serve`
 - Uses `conda-rattler-solver` for fast SAT solving
 
@@ -65,50 +66,86 @@ conda presto --serve --port 8000
 
 ### Output formats
 
-**resolve-json** (default): full package metadata with sha256, urls,
-sizes, depends, and constrains.
+The default output is a pretty-printed JSON array of results, one
+entry per platform, serialized directly from ``SolveResult``
+``msgspec.Struct`` instances.  The shape is byte-identical to the
+HTTP API's response, so the same JSON parser works for both the
+CLI and the API.  Partial failures are expressed as per-platform
+``"error"`` fields so a bad spec for one platform doesn't fail the
+whole request.
 
 ```bash
 conda presto -c conda-forge -p linux-64 zlib
 ```
 
 ```json
-{
-  "platform": "linux-64",
-  "packages": [
-    {
-      "name": "zlib",
-      "version": "1.3.2",
-      "build": "h25fd6f3_2",
-      "build_number": 2,
-      "channel": "conda-forge",
-      "subdir": "linux-64",
-      "url": "https://conda.anaconda.org/conda-forge/linux-64/zlib-1.3.2-h25fd6f3_2.conda",
-      "sha256": "245c9ee8d688e23661b95e3c6dd7272ca936fabc03d423cdb3cdee1bbcf9f2f2",
-      "md5": "c2a01a08fc991620a74b32420e97868a",
-      "size": 95931,
-      "depends": ["__glibc >=2.17,<3.0.a0", "libzlib 1.3.2 h25fd6f3_2"],
-      "constrains": []
-    }
-  ]
-}
+[
+  {
+    "platform": "linux-64",
+    "packages": [
+      {
+        "name": "zlib",
+        "version": "1.3.2",
+        "build": "h25fd6f3_2",
+        "build_number": 2,
+        "channel": "conda-forge",
+        "subdir": "linux-64",
+        "url": "https://conda.anaconda.org/conda-forge/linux-64/zlib-1.3.2-h25fd6f3_2.conda",
+        "sha256": "245c9ee8d688e23661b95e3c6dd7272ca936fabc03d423cdb3cdee1bbcf9f2f2",
+        "md5": "c2a01a08fc991620a74b32420e97868a",
+        "size": 95931,
+        "depends": ["__glibc >=2.17,<3.0.a0", "libzlib 1.3.2 h25fd6f3_2"],
+        "constrains": []
+      }
+    ],
+    "error": null
+  }
+]
 ```
 
-**Explicit lockfile** (`--format explicit`): one URL per line,
-compatible with `conda create --file`.
+Pass `--format <name>` to route through conda's exporter plugins
+instead (same set of formats as the HTTP API's `?format=` query
+parameter).  Because `conda-lockfiles` ships as a base dependency,
+the following formats work out of the box:
+
+- `explicit` — `@EXPLICIT` URL-per-line lockfile
+- `environment-yaml` / aliases `yaml`, `yml`, `env.yml` — `environment.yml`
+- `environment-json` / alias `json` — JSON environment spec
+- `requirements` / aliases `reqs`, `txt` — pip-style requirements
+- `conda-lock-v1` — `conda-lock.yml`
+- `rattler-lock-v6` / alias `pixi-lock-v6` — `pixi.lock`
+
+Any extra formats registered by other installed exporter plugins are
+picked up automatically.
 
 ```bash
 conda presto -c conda-forge -p linux-64 --format explicit zlib
+conda presto -c conda-forge -p linux-64 --format conda-lock-v1 zlib
 ```
 
-**YAML** (`--format yaml`): conda environment.yml format.
+#### Pipeline: convert `environment.yml` to a usable `pixi.lock`
+
+Because conda-presto reads any format conda's env-spec plugins
+understand and writes any format conda's exporter plugins understand,
+the two ends hook together into a plain shell pipeline.  This turns
+an `environment.yml` into a `pixi.lock` that `conda env create` can
+consume directly — no pixi or other tooling required:
 
 ```bash
-conda presto -c conda-forge -p linux-64 --format yaml zlib
+conda presto -f environment.yml --format pixi-lock-v6 > pixi.lock
+conda env create -n demo -f pixi.lock
 ```
 
-Other formats can be provided by conda exporter plugins
-(`--format <name>`).
+The second step uses `conda-lockfiles`' env-spec loader (registered
+through conda's plugin system) so `pixi.lock` is just another input
+format to conda.  The same shape works for any other pair of
+formats — e.g. `pyproject.toml` &rarr; `conda-lock.yml`,
+`conda.yaml` &rarr; `explicit` — because presto is only the glue
+between two plugin registries.
+
+On the exporter path, a solver failure on any platform raises the
+whole command (the exporter operates on successful environments
+only); drop `--format` when you want per-platform partial results.
 
 ## HTTP API
 
@@ -148,8 +185,27 @@ curl -X POST http://localhost:8000/resolve \
 Query params (`spec`, `channel`, `platform`) work on both GET and POST.
 Body fields override query params when both are present.
 
-Returns a JSON array with one entry per platform, same structure as
-the CLI's `resolve-json` format.
+By default, returns a JSON array with one entry per platform — the
+same shape the CLI emits by default.  Partial failures are expressed
+as per-platform `error` fields so a bad spec for one platform doesn't
+fail the whole request.
+
+### Output formats (`?format=<name>`)
+
+Pass `?format=` to route the response through conda's exporter plugin
+registry — the same formats available to the CLI:
+
+```bash
+curl 'http://localhost:8000/resolve?spec=zlib&channel=conda-forge&platform=linux-64&format=explicit'
+curl 'http://localhost:8000/resolve?spec=zlib&channel=conda-forge&platform=linux-64&format=conda-lock-v1'
+curl 'http://localhost:8000/resolve?spec=zlib&channel=conda-forge&platform=linux-64&format=pixi-lock-v6'
+```
+
+Unknown formats return HTTP 400 with the available format list in the
+error body.  Because exporters operate on successful `Environment`
+objects only, any solver failure on the `?format=` path returns HTTP
+500 instead of a partial response — use the default (no `format` query
+param) when you want per-platform error details.
 
 ### `GET /health`
 
@@ -233,10 +289,20 @@ pixi run serve       # uvicorn with --reload
 ### Index caching
 
 Building the repodata index (~700 ms) is the dominant cost of a solve.
-The solver caches `RattlerIndexHelper` objects keyed by
-`(channels, platform)` with a 300-second TTL. After the first solve,
-repeat solves for the same channels/platform hit the cache and only
-pay the SAT solving time (~20-100 ms).
+Two caches work together:
+
+- **On-disk repodata cache** (conda): how long conda will reuse a
+  downloaded ``repodata.json`` before re-fetching from the channel.
+  Controlled by ``CONDA_LOCAL_REPODATA_TTL`` (default ``300`` seconds
+  in presto's pixi activation).
+- **In-memory index cache** (presto): a ``RattlerIndexHelper`` keyed
+  by ``(channels, platform)`` that's built on first use and reused for
+  the rest of the process's lifetime.  There is no per-entry TTL;
+  invalidation happens on process restart or via
+  ``clear_index_cache()``.
+
+After the first solve, repeat solves for the same channels/platform
+hit the in-memory cache and only pay the SAT solving time (~20-100 ms).
 
 The server pre-warms these caches on startup for the configured
 default channels and platforms (see environment variables below).
@@ -252,14 +318,18 @@ default channels and platforms (see environment variables below).
 | `CONDA_PRESTO_CONCURRENCY` | `4` | Maximum concurrent solve requests (thread limiter). |
 | `CONDA_PRESTO_WORKERS` | `min(4, cpu_count)` | Process pool size for multi-platform parallel solves. |
 | `CONDA_PRESTO_MAX_BODY_BYTES` | `1048576` (1 MB) | Maximum request body size in bytes. Returns 413 if exceeded. |
+| `CONDA_PRESTO_MAX_SPECS` | `200` | Max specs per request. Returns 400 if exceeded. |
+| `CONDA_PRESTO_MAX_PLATFORMS` | `8` | Max platforms per request. Returns 400 if exceeded. |
+| `CONDA_PRESTO_SOLVE_TIMEOUT_S` | `60` | Per-request solve timeout in seconds. Returns 504 if exceeded. |
 | `CONDA_PRESTO_HOST` | `127.0.0.1` | Default bind address for `--serve` / `--host`. |
 | `CONDA_PRESTO_PORT` | `8000` | Default port for `--serve` / `--port`. |
-| `CONDA_PRESTO_RATE_LIMIT` | `300` | Max requests per minute per client. Set to `0` to disable. |
+| `CONDA_PRESTO_RATE_LIMIT` | `300` | Max requests per minute per client. Set to `0` to disable. Behind a reverse proxy, start uvicorn with `--forwarded-allow-ips` so the rate-limit key is the real client IP, not the proxy. |
 | `CONDA_PRESTO_CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins. |
 | `CONDA_PRESTO_LOG_LEVEL` | `INFO` | Application log level. |
 | `CONDA_PRESTO_GLIBC_VERSION` | `2.17` | Virtual `__glibc` version for cross-platform Linux solves. |
 | `CONDA_PRESTO_LINUX_VERSION` | `5.15` | Virtual `__linux` version for cross-platform Linux solves. |
 | `CONDA_PRESTO_OSX_VERSION` | `11.0` | Virtual `__osx` version for cross-platform macOS solves. |
+| `CONDA_PRESTO_WIN_VERSION` | `0` | Virtual `__win` version for cross-platform Windows solves. |
 
 #### Conda tuning
 
@@ -286,10 +356,12 @@ defaults via `context.override_virtual_packages`:
 
 - **linux**: `__glibc` (default `2.17`, conda-forge baseline), `__linux` (default `5.15`)
 - **osx**: `__osx` (default `11.0`, Big Sur, conda-forge arm64 baseline)
+- **win**: `__win` (default `0`; the package is usually unversioned on conda-forge)
 
 Override these via `CONDA_PRESTO_GLIBC_VERSION`,
-`CONDA_PRESTO_LINUX_VERSION`, and `CONDA_PRESTO_OSX_VERSION`
-(see the application environment variables table above).
+`CONDA_PRESTO_LINUX_VERSION`, `CONDA_PRESTO_OSX_VERSION`, and
+`CONDA_PRESTO_WIN_VERSION` (see the application environment
+variables table above).
 
 ## Benchmarks
 
@@ -301,28 +373,45 @@ cache, solving against `conda-forge`:
 
 | Scenario | Mean | Min | Max |
 |---|---:|---:|---:|
-| zlib, 1 platform | 1.0 s | 1.0 s | 1.1 s |
-| zlib, 3 platforms | 1.4 s | 1.3 s | 1.5 s |
-| py+scipy+pandas+matplotlib, 1 platform | 1.5 s | 1.4 s | 1.5 s |
-| py+scipy+pandas+matplotlib, 3 platforms | 1.8 s | 1.8 s | 1.9 s |
-| py+pytorch+transformers+sklearn (11 pkgs), 1 platform | 4.0 s | 3.8 s | 4.2 s |
-| py+pytorch+transformers+sklearn (11 pkgs), 3 platforms | 4.6 s | 4.4 s | 4.9 s |
+| zlib, 1 platform | 1.08 s | 1.05 s | 1.16 s |
+| zlib, 3 platforms | 1.45 s | 1.36 s | 1.52 s |
+| py+scipy+pandas+matplotlib, 1 platform | 1.51 s | 1.49 s | 1.56 s |
+| py+scipy+pandas+matplotlib, 3 platforms | 1.83 s | 1.80 s | 1.88 s |
+| py+pytorch+transformers+sklearn (11 pkgs), 1 platform | 3.98 s | 3.91 s | 4.12 s |
+| py+pytorch+transformers+sklearn (11 pkgs), 3 platforms | 4.52 s | 4.36 s | 4.75 s |
 
 Times include Python startup (~50 ms), pixi overhead (~50 ms), and
 conda import (~200 ms). Multi-platform solves run in parallel and
-scale sub-linearly (3 platforms in ~1.2x the time of 1).
+scale sub-linearly (3 platforms in ~1.15–1.35x the time of 1).
+
+Pipeline scenarios for the format-conversion workflow described
+above (`python=3.12 numpy pandas`, single platform):
+
+| Pipeline | Mean | Min | Max |
+|---|---:|---:|---:|
+| `env.yml` &rarr; `pixi.lock` (presto only) | 0.91 s | 0.88 s | 0.97 s |
+| `env.yml` &rarr; `pixi.lock` &rarr; `conda env create --dry-run` | 1.21 s | 1.18 s | 1.22 s |
+
+The second row pays for one extra round-trip through conda's own
+solver to validate the lockfile end-to-end.
 
 ### In-process server (pytest-benchmark)
 
 With a warm index cache, solves are dominated by SAT time only:
 
 | Operation | Time |
-|---|---|
+|---|---:|
 | Single-platform solve (`zlib`) | ~15 ms |
-| Single-platform solve (`python=3.12, numpy`) | ~96 ms |
-| `ResolvedPackage.from_record` (single) | 2.1 µs |
-| `ResolvedPackage.to_dict` (single) | 284 ns |
-| `SolveResult.to_dict` (100 packages) | 22 µs |
+| Single-platform solve (`python=3.12, numpy`) | ~98 ms |
+| `ResolvedPackage.from_record` (single) | ~2.0 µs |
+| `ResolvedPackage.from_record` (100 records) | ~220 µs |
+| `msgspec.json.encode(ResolvedPackage)` | ~220 ns |
+| `msgspec.json.encode(SolveResult)` (100 packages) | ~12 µs |
+| Server path: records &rarr; `SolveResult` &rarr; JSON (100 pkgs) | ~225 µs |
+
+Encoding is dominated by `PackageRecord` &rarr; `ResolvedPackage`
+conversion (about 95% of the server path time); the actual
+`msgspec.json.encode` step is ~5%.
 
 Run benchmarks:
 

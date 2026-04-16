@@ -8,6 +8,7 @@ from litestar.openapi import OpenAPIConfig
 
 from conda_presto.app import (
     health,
+    on_shutdown,
     on_startup,
     resolve_get,
     resolve_post,
@@ -329,6 +330,275 @@ async def test_resolve_internal_error(client, monkeypatch):
     )
     assert resp.status_code == 500
     assert resp.json()["error"] == "Internal solver error"
+
+
+@pytest.mark.anyio
+async def test_resolve_generic_error_does_not_leak_paths(client, monkeypatch):
+    def raise_with_path(*a, **kw):
+        raise KeyError("/Users/secret/very/private/path")
+
+    monkeypatch.setattr("conda_presto.app.solve", raise_with_path)
+    resp = await client.post(
+        "/resolve",
+        json={"specs": ["zlib"], "platforms": ["linux-64"]},
+    )
+    assert resp.status_code == 500
+    assert "/Users/" not in resp.text
+    assert "private" not in resp.text
+    assert resp.json()["error"] == "Internal solver error"
+
+
+@pytest.mark.anyio
+async def test_resolve_solve_timeout(client, monkeypatch):
+    import time
+
+    monkeypatch.setattr("conda_presto.app.SOLVE_TIMEOUT_S", 0.1)
+
+    def slow_solve(*a, **kw):
+        time.sleep(2)
+        return []
+
+    monkeypatch.setattr("conda_presto.app.solve", slow_solve)
+    resp = await client.post(
+        "/resolve",
+        json={"specs": ["zlib"], "platforms": ["linux-64"]},
+    )
+    assert resp.status_code == 504
+    assert "timeout" in resp.json()["error"].lower()
+
+
+@pytest.mark.anyio
+async def test_resolve_rejects_too_many_platforms(client, monkeypatch):
+    monkeypatch.setattr("conda_presto.app.MAX_PLATFORMS", 2)
+    resp = await client.post(
+        "/resolve",
+        json={
+            "specs": ["zlib"],
+            "platforms": ["linux-64", "osx-64", "osx-arm64"],
+        },
+    )
+    assert resp.status_code == 400
+    assert "Too many platforms" in resp.json()["error"]
+
+
+@pytest.mark.anyio
+async def test_resolve_rejects_too_many_specs(client, monkeypatch):
+    monkeypatch.setattr("conda_presto.app.MAX_SPECS", 2)
+    resp = await client.post(
+        "/resolve",
+        json={
+            "specs": ["a", "b", "c"],
+            "platforms": ["linux-64"],
+        },
+    )
+    assert resp.status_code == 400
+    assert "Too many specs" in resp.json()["error"]
+
+
+@pytest.mark.anyio
+async def test_resolve_get_rejects_too_many_platforms(client, monkeypatch):
+    monkeypatch.setattr("conda_presto.app.MAX_PLATFORMS", 1)
+    resp = await client.get(
+        "/resolve",
+        params=[
+            ("spec", "zlib"),
+            ("platform", "linux-64"),
+            ("platform", "osx-arm64"),
+        ],
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_resolve_post_omitted_fields_fall_through_to_query(
+    client, monkeypatch
+):
+    captured = {}
+
+    def capture(channels, specs, platforms):
+        captured["channels"] = channels
+        captured["specs"] = specs
+        captured["platforms"] = platforms
+        return []
+
+    monkeypatch.setattr("conda_presto.app.solve", capture)
+    resp = await client.post(
+        "/resolve?channel=conda-forge&platform=linux-64",
+        json={"specs": ["zlib"]},
+    )
+    assert resp.status_code == 200
+    assert captured["specs"] == ["zlib"]
+    assert captured["channels"] == ["conda-forge"]
+    assert captured["platforms"] == ["linux-64"]
+
+
+@pytest.mark.anyio
+async def test_resolve_post_empty_body_array_overrides_query(
+    client, monkeypatch
+):
+    captured = {}
+
+    def capture(channels, specs, platforms):
+        captured["channels"] = channels
+        captured["specs"] = specs
+        captured["platforms"] = platforms
+        return []
+
+    monkeypatch.setattr("conda_presto.app.solve", capture)
+    resp = await client.post(
+        "/resolve?platform=osx-arm64",
+        json={"specs": ["zlib"], "platforms": []},
+    )
+    assert resp.status_code == 200
+    # Empty array in body overrides query; handler passes None to trigger
+    # the NATIVE_SUBDIR default inside solve().
+    assert captured["platforms"] is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "fmt, content_marker, content_type_prefix",
+    [
+        pytest.param("explicit", "@EXPLICIT", "text/plain", id="explicit"),
+        pytest.param(
+            "environment-yaml",
+            "dependencies:",
+            "application/yaml",
+            id="yaml",
+        ),
+        pytest.param(
+            "environment-json",
+            '"dependencies"',
+            "application/json",
+            id="environment-json",
+        ),
+    ],
+)
+async def test_resolve_get_format_query_param(
+    client, fmt, content_marker, content_type_prefix
+):
+    resp = await client.get(
+        "/resolve",
+        params=[
+            ("spec", "zlib"),
+            ("channel", "conda-forge"),
+            ("platform", "linux-64"),
+            ("format", fmt),
+        ],
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith(content_type_prefix)
+    assert content_marker in resp.text
+
+
+@pytest.mark.anyio
+async def test_resolve_post_format_query_param(client):
+    resp = await client.post(
+        "/resolve?format=explicit",
+        json={
+            "specs": ["zlib"],
+            "channels": ["conda-forge"],
+            "platforms": ["linux-64"],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert "@EXPLICIT" in resp.text
+
+
+@pytest.mark.anyio
+async def test_convert_environment_yml_to_pixi_lock_via_http(
+    client, tmp_path
+):
+    """End-to-end HTTP: POST ``environment.yml`` body -> pixi.lock
+    response. Mirrors the CLI pipeline test."""
+    import yaml
+
+    platform = "linux-64"
+    resp = await client.post(
+        "/resolve?format=pixi-lock-v6",
+        json={
+            "file": (
+                "name: demo\n"
+                "channels:\n  - conda-forge\n"
+                "dependencies:\n  - zlib\n"
+            ),
+            "platforms": [platform],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/yaml")
+
+    data = yaml.safe_load(resp.text)
+    assert data["version"] == 6
+    assert platform in data["environments"]["default"]["packages"]
+    assert "zlib" in resp.text
+    for pkg in data["packages"]:
+        assert pkg.get("sha256"), "pixi.lock packages must have sha256"
+
+
+@pytest.mark.anyio
+async def test_resolve_format_unknown_returns_400(client):
+    resp = await client.get(
+        "/resolve",
+        params=[
+            ("spec", "zlib"),
+            ("channel", "conda-forge"),
+            ("platform", "linux-64"),
+            ("format", "does-not-exist"),
+        ],
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "does-not-exist" in body["error"]
+    assert isinstance(body["available_formats"], list)
+    assert "explicit" in body["available_formats"]
+
+
+@pytest.mark.anyio
+async def test_resolve_format_includes_conda_lockfiles_formats(client):
+    """When conda-lockfiles is installed, its formats are exposed."""
+    resp = await client.get(
+        "/resolve",
+        params=[
+            ("spec", "zlib"),
+            ("channel", "conda-forge"),
+            ("platform", "linux-64"),
+            ("format", "conda-lock-v1"),
+        ],
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/yaml")
+    assert "version:" in resp.text or "package:" in resp.text
+
+
+@pytest.mark.anyio
+async def test_resolve_format_propagates_solver_errors_as_500(
+    client, monkeypatch
+):
+    """Exporter path can't represent per-platform errors -> 500 on failure."""
+    def boom(*a, **kw):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr("conda_presto.app.solve_environments", boom)
+    resp = await client.post(
+        "/resolve?format=explicit",
+        json={"specs": ["zlib"], "platforms": ["linux-64"]},
+    )
+    assert resp.status_code == 500
+    assert resp.json()["error"] == "Internal solver error"
+
+
+@pytest.mark.anyio
+async def test_on_shutdown_shuts_down_process_pool(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "conda_presto.app.shutdown_process_pool",
+        lambda: calls.append(True),
+    )
+    dummy_app = Litestar(route_handlers=[health])
+    await on_shutdown(dummy_app)
+    assert calls == [True]
 
 
 @pytest.mark.anyio

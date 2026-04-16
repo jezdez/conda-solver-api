@@ -1,14 +1,15 @@
 """Benchmarks for conda_presto hot paths using pytest-benchmark.
 
-Compares the server path (ResolvedPackage/SolveResult) against the
-CLI path (PackageRecord/Environment) to verify the server types
-provide measurable serialization and memory benefits.
+Compares the serialized (``ResolvedPackage``/``SolveResult`` ->
+``msgspec.json``) path against the exporter-plugin path
+(``PackageRecord``/``Environment``) to verify the msgspec path
+provides measurable serialization and memory benefits.
 """
 from __future__ import annotations
 
-import json
 import sys
 
+import msgspec
 import pytest
 from conda.models.environment import Environment
 
@@ -37,16 +38,16 @@ def test_bench_from_record_batch(benchmark, many_records):
     benchmark(lambda: [ResolvedPackage.from_record(r) for r in many_records])
 
 
-def test_bench_to_dict_single(benchmark, sample_resolved_package):
-    benchmark(sample_resolved_package.to_dict)
+def test_bench_msgspec_encode_single(benchmark, sample_resolved_package):
+    benchmark(msgspec.json.encode, sample_resolved_package)
 
 
-def test_bench_to_dict_batch(benchmark, resolved_packages):
-    benchmark(lambda: [p.to_dict() for p in resolved_packages])
+def test_bench_msgspec_encode_batch(benchmark, resolved_packages):
+    benchmark(msgspec.json.encode, resolved_packages)
 
 
-def test_bench_solve_result_to_dict(benchmark, solve_result):
-    benchmark(solve_result.to_dict)
+def test_bench_msgspec_encode_solve_result(benchmark, solve_result):
+    benchmark(msgspec.json.encode, solve_result)
 
 
 @pytest.mark.parametrize(
@@ -68,11 +69,11 @@ def test_bench_solve_multi_platform(benchmark):
 
 
 def test_bench_server_path_serialize(benchmark, many_records):
-    """Server path: PackageRecord -> ResolvedPackage -> to_dict -> JSON."""
+    """Server path: PackageRecord -> ResolvedPackage -> msgspec.json."""
     def run():
         packages = [ResolvedPackage.from_record(r) for r in many_records]
         result = SolveResult(platform="linux-64", packages=packages)
-        return json.dumps(result.to_dict())
+        return msgspec.json.encode(result)
 
     benchmark(run)
 
