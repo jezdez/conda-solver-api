@@ -17,11 +17,10 @@ Performance notes:
       requests.
     - All arguments to ``solve_one_platform`` are plain strings/tuples
       so they serialize cheaply for cross-process dispatch.
-    - ``ResolvedPackage`` uses ``slots=True`` and stores depends/constrains
-      as tuples (immutable, smaller than lists). Conversion to list
-      happens only at the serialization boundary in ``to_dict()``.
-    - ``to_dict()`` is hand-written instead of using ``dataclasses.asdict()``
-      which performs a recursive deep-copy of all nested structures.
+    - ``ResolvedPackage`` and ``SolveResult`` are ``msgspec.Struct``
+      subclasses, which are faster to instantiate and use less memory
+      than dataclasses. Litestar encodes them natively to JSON without
+      intermediate dicts. ``to_dict()`` is kept for the CLI/exporter path.
 
 Security notes:
     - ``run_solver`` is protected by ``platform_lock`` so that
