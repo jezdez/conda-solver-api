@@ -7,11 +7,10 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 
 from conda_resolve.app import (
-    cache_clear,
     health,
     lifespan,
-    solve_environment_yml,
-    solve_specs,
+    openapi_schema,
+    resolve,
 )
 
 
@@ -19,14 +18,9 @@ from conda_resolve.app import (
 def test_app():
     return Starlette(
         routes=[
-            Route("/solve", solve_specs, methods=["POST"]),
-            Route(
-                "/solve/environment-yml",
-                solve_environment_yml,
-                methods=["POST"],
-            ),
+            Route("/resolve", resolve, methods=["GET", "POST"]),
             Route("/health", health, methods=["GET"]),
-            Route("/cache/clear", cache_clear, methods=["POST"]),
+            Route("/openapi.json", openapi_schema, methods=["GET"]),
         ],
     )
 
@@ -59,12 +53,12 @@ async def test_health(client):
         ),
     ],
 )
-async def test_solve_specs(client, platforms):
+async def test_resolve_post_specs(client, platforms):
     resp = await client.post(
-        "/solve",
+        "/resolve",
         json={
             "channels": ["conda-forge"],
-            "dependencies": ["zlib"],
+            "specs": ["zlib"],
             "platforms": platforms,
         },
     )
@@ -82,12 +76,43 @@ async def test_solve_specs(client, platforms):
 
 
 @pytest.mark.anyio
-async def test_solve_specs_unsatisfiable(client):
+async def test_resolve_get_specs(client):
+    resp = await client.get(
+        "/resolve",
+        params=[
+            ("spec", "zlib"),
+            ("channel", "conda-forge"),
+            ("platform", "linux-64"),
+        ],
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["platform"] == "linux-64"
+    assert data[0]["error"] is None
+    names = [p["name"] for p in data[0]["packages"]]
+    assert "zlib" in names
+
+
+@pytest.mark.anyio
+async def test_resolve_post_defaults(client):
     resp = await client.post(
-        "/solve",
+        "/resolve",
+        json={"specs": ["zlib"]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["error"] is None
+
+
+@pytest.mark.anyio
+async def test_resolve_post_unsatisfiable(client):
+    resp = await client.post(
+        "/resolve",
         json={
             "channels": ["conda-forge"],
-            "dependencies": ["__nonexistent_package_xyz__"],
+            "specs": ["__nonexistent_package_xyz__"],
             "platforms": ["linux-64"],
         },
     )
@@ -99,77 +124,95 @@ async def test_solve_specs_unsatisfiable(client):
 
 
 @pytest.mark.anyio
-async def test_solve_specs_defaults(client):
+async def test_resolve_post_file(client):
+    yml = (
+        "name: test\n"
+        "channels:\n"
+        "  - conda-forge\n"
+        "dependencies:\n"
+        "  - python=3.12\n"
+        "  - numpy\n"
+    )
     resp = await client.post(
-        "/solve",
-        json={"dependencies": ["zlib"]},
+        "/resolve",
+        json={
+            "file": yml,
+            "platforms": ["linux-64"],
+        },
     )
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
+    names = [p["name"] for p in data[0]["packages"]]
+    assert "python" in names
+    assert "numpy" in names
+
+
+@pytest.mark.anyio
+async def test_resolve_post_file_with_filename(client):
+    yml = (
+        "name: test\n"
+        "channels:\n"
+        "  - conda-forge\n"
+        "dependencies:\n"
+        "  - zlib\n"
+    )
+    resp = await client.post(
+        "/resolve",
+        json={
+            "file": yml,
+            "filename": "environment.yaml",
+            "platforms": ["linux-64"],
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
     assert data[0]["error"] is None
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    "query, expected_count, check_names",
-    [
-        pytest.param(
-            "?platform=linux-64", 1, ["python", "numpy"], id="single"
-        ),
-        pytest.param(
-            "?platform=linux-64&platform=osx-arm64",
-            2,
-            None,
-            id="multi",
-            marks=pytest.mark.crossplatform,
-        ),
-    ],
-)
-async def test_solve_environment_yml(
-    client, environment_yml_bytes, query, expected_count, check_names
-):
-    resp = await client.post(
-        f"/solve/environment-yml{query}",
-        content=environment_yml_bytes,
-        headers={"content-type": "application/x-yaml"},
+async def test_resolve_post_merged_specs_and_file(client):
+    yml = (
+        "name: test\n"
+        "channels:\n"
+        "  - conda-forge\n"
+        "dependencies:\n"
+        "  - python=3.12\n"
     )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert len(data) == expected_count
-    if check_names:
-        names = [p["name"] for p in data[0]["packages"]]
-        for name in check_names:
-            assert name in names
-
-
-@pytest.mark.anyio
-async def test_solve_environment_yml_filters_pip_deps(client):
-    yml = b"""\
-name: mixed
-channels:
-  - conda-forge
-dependencies:
-  - python=3.12
-  - pip:
-    - requests
-"""
     resp = await client.post(
-        "/solve/environment-yml?platform=linux-64",
-        content=yml,
-        headers={"content-type": "application/x-yaml"},
+        "/resolve",
+        json={
+            "specs": ["zlib"],
+            "file": yml,
+            "platforms": ["linux-64"],
+        },
     )
     assert resp.status_code == 200
     data = resp.json()
     names = [p["name"] for p in data[0]["packages"]]
     assert "python" in names
-    assert "requests" not in names
+    assert "zlib" in names
 
 
 @pytest.mark.anyio
-async def test_solve_specs_invalid_json(client):
+async def test_resolve_post_body_overrides_query_params(client):
     resp = await client.post(
-        "/solve",
+        "/resolve?channel=defaults&platform=osx-64",
+        json={
+            "specs": ["zlib"],
+            "channels": ["conda-forge"],
+            "platforms": ["linux-64"],
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data[0]["platform"] == "linux-64"
+
+
+@pytest.mark.anyio
+async def test_resolve_post_invalid_json(client):
+    resp = await client.post(
+        "/resolve",
         content=b"not json",
         headers={"content-type": "application/json"},
     )
@@ -178,72 +221,105 @@ async def test_solve_specs_invalid_json(client):
 
 
 @pytest.mark.anyio
+async def test_resolve_post_not_object(client):
+    resp = await client.post(
+        "/resolve",
+        json=["just", "a", "list"],
+    )
+    assert resp.status_code == 400
+    assert "JSON object" in resp.json()["error"]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "body",
     [
         {"channels": 123},
-        {"dependencies": [None]},
+        {"specs": [None]},
         {"platforms": "linux-64"},
-        {"dependencies": ["zlib"], "channels": ["ok"], "platforms": [1]},
+        {"specs": ["zlib"], "channels": ["ok"], "platforms": [1]},
     ],
 )
-async def test_solve_specs_invalid_types(client, body):
-    resp = await client.post("/solve", json=body)
+async def test_resolve_post_invalid_types(client, body):
+    resp = await client.post("/resolve", json=body)
     assert resp.status_code == 400
     assert "must be a list of strings" in resp.json()["error"]
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    "endpoint",
-    [
-        pytest.param("/solve", id="solve"),
-        pytest.param("/solve/environment-yml", id="env-yml"),
-    ],
-)
-async def test_body_too_large(client, endpoint):
-    content_type = (
-        "application/json" if endpoint == "/solve" else "application/x-yaml"
+async def test_resolve_post_file_not_string(client):
+    resp = await client.post(
+        "/resolve",
+        json={"file": 123},
+    )
+    assert resp.status_code == 400
+    assert "'file' must be a string" in resp.json()["error"]
+
+
+@pytest.mark.anyio
+async def test_resolve_post_bad_extension(client):
+    resp = await client.post(
+        "/resolve",
+        json={
+            "file": "some content",
+            "filename": "malicious.exe",
+        },
+    )
+    assert resp.status_code == 400
+    assert "Unsupported file extension" in resp.json()["error"]
+
+
+@pytest.mark.anyio
+async def test_resolve_post_path_traversal(client):
+    yml = (
+        "name: test\n"
+        "channels:\n"
+        "  - conda-forge\n"
+        "dependencies:\n"
+        "  - zlib\n"
     )
     resp = await client.post(
-        endpoint,
+        "/resolve",
+        json={
+            "file": yml,
+            "filename": "../../etc/environment.yml",
+            "platforms": ["linux-64"],
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data[0]["error"] is None
+
+
+@pytest.mark.anyio
+async def test_resolve_no_specs_or_file(client):
+    resp = await client.post("/resolve", json={})
+    assert resp.status_code == 400
+    assert "Provide specs or file" in resp.json()["error"]
+
+
+@pytest.mark.anyio
+async def test_resolve_get_no_specs(client):
+    resp = await client.get("/resolve")
+    assert resp.status_code == 400
+    assert "Provide specs or file" in resp.json()["error"]
+
+
+@pytest.mark.anyio
+async def test_resolve_body_too_large(client):
+    resp = await client.post(
+        "/resolve",
         content=b"x" * (1_024 * 1_024 + 1),
-        headers={"content-type": content_type},
+        headers={"content-type": "application/json"},
     )
     assert resp.status_code == 413
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    "body, expected_fragment",
-    [
-        pytest.param(
-            b": [invalid yaml {{", "Invalid YAML", id="invalid-yaml"
-        ),
-        pytest.param(
-            b"- just\n- a\n- list\n",
-            "Expected a YAML mapping",
-            id="not-mapping",
-        ),
-    ],
-)
-async def test_solve_environment_yml_invalid_body(
-    client, body, expected_fragment
-):
+async def test_resolve_invalid_content_length(client):
     resp = await client.post(
-        "/solve/environment-yml",
-        content=body,
-        headers={"content-type": "application/x-yaml"},
-    )
-    assert resp.status_code == 400
-    assert expected_fragment in resp.json()["error"]
-
-
-@pytest.mark.anyio
-async def test_solve_specs_invalid_content_length(client):
-    resp = await client.post(
-        "/solve",
-        content=b'{"dependencies": ["zlib"]}',
+        "/resolve",
+        content=b'{"specs": ["zlib"]}',
         headers={
             "content-type": "application/json",
             "content-length": "not-a-number",
@@ -254,68 +330,31 @@ async def test_solve_specs_invalid_content_length(client):
 
 
 @pytest.mark.anyio
-async def test_solve_environment_yml_invalid_channels(client):
-    yml = b"""\
-name: test
-channels:
-  - 123
-dependencies:
-  - zlib
-"""
-    resp = await client.post(
-        "/solve/environment-yml?platform=linux-64",
-        content=yml,
-        headers={"content-type": "application/x-yaml"},
-    )
-    assert resp.status_code == 400
-    assert "channels" in resp.json()["error"]
-
-
-@pytest.mark.anyio
-async def test_cache_clear(client):
-    resp = await client.post("/cache/clear")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "cleared" in data
-    assert isinstance(data["cleared"], int)
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    "endpoint, kwargs",
-    [
-        pytest.param(
-            "/solve",
-            {
-                "json": {
-                    "channels": ["conda-forge"],
-                    "dependencies": ["zlib"],
-                    "platforms": ["linux-64"],
-                }
-            },
-            id="specs",
-        ),
-        pytest.param(
-            "/solve/environment-yml?platform=linux-64",
-            {
-                "content": (
-                    b"name: test\nchannels:\n"
-                    b"  - conda-forge\ndependencies:\n  - zlib\n"
-                ),
-                "headers": {"content-type": "application/x-yaml"},
-            },
-            id="env-yml",
-        ),
-    ],
-)
-async def test_internal_error(client, monkeypatch, endpoint, kwargs):
+async def test_resolve_internal_error(client, monkeypatch):
     monkeypatch.setattr(
         "conda_resolve.app.solve",
         lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
     )
-    resp = await client.post(endpoint, **kwargs)
+    resp = await client.post(
+        "/resolve",
+        json={
+            "channels": ["conda-forge"],
+            "specs": ["zlib"],
+            "platforms": ["linux-64"],
+        },
+    )
     assert resp.status_code == 500
     assert resp.json()["error"] == "Internal solver error"
+
+
+@pytest.mark.anyio
+async def test_openapi_schema(client):
+    resp = await client.get("/openapi.json")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["openapi"] == "3.1.0"
+    assert "/resolve" in data["paths"]
+    assert "/health" in data["paths"]
 
 
 @pytest.mark.anyio

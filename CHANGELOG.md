@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-04-16
+
+### Added
+
+- Configuration module (`config.py`) with environment variable overrides
+  for all operational settings: `CONDA_RESOLVE_CHANNELS`,
+  `CONDA_RESOLVE_PLATFORMS`, `CONDA_RESOLVE_CONCURRENCY`,
+  `CONDA_RESOLVE_WORKERS`, `CONDA_RESOLVE_MAX_BODY_BYTES`,
+  `CONDA_RESOLVE_HOST`, `CONDA_RESOLVE_PORT`,
+  `CONDA_RESOLVE_GLIBC_VERSION`, `CONDA_RESOLVE_LINUX_VERSION`,
+  `CONDA_RESOLVE_OSX_VERSION`.
+- Support for `.toml` and `.json` file extensions in the HTTP API
+  file upload endpoint.
+- Dynamic OpenAPI schema version derived from package metadata
+  via `importlib.metadata`.
+
+### Changed
+
+- Default fallback channel changed from `defaults` to `conda-forge`
+  in both CLI and HTTP API, configurable via `CONDA_RESOLVE_CHANNELS`.
+- Unified HTTP API to single `/resolve` endpoint supporting both
+  GET (query params) and POST (JSON body). Removed old `/solve`,
+  `/solve/environment-yml`, and `/cache/clear` endpoints.
+- Request body uses `specs` field instead of `dependencies`, and
+  `file`/`filename` fields for environment file content instead of
+  raw YAML body.
+- POST body fields override query params when both are present.
+- Virtual package versions for cross-platform solving are now
+  configurable via environment variables instead of hardcoded.
+- Process pool size and server host/port defaults are now
+  configurable via environment variables.
+- Updated test suite to match the new `/resolve` API.
+
 ## [0.1.1] - 2026-04-15
 
 ### Added
@@ -80,5 +113,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependabot configuration for GitHub Actions version updates.
 - BSD 3-Clause license.
 
+[0.2.0]: https://github.com/jezdez/conda-resolve/releases/tag/v0.2.0
 [0.1.1]: https://github.com/jezdez/conda-resolve/releases/tag/v0.1.1
 [0.1.0]: https://github.com/jezdez/conda-resolve/releases/tag/v0.1.0

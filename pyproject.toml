@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "conda-resolve"
-version = "0.1.0"
+version = "0.2.0"
 description = "Resolve conda environment.yml files to fully pinned package lists with SHA256 hashes"
 license = "BSD-3-Clause"
 requires-python = ">=3.13"

@@ -2217,8 +2217,8 @@ packages:
   timestamp: 1773674312824
 - pypi: ./
   name: conda-resolve
-  version: 0.1.0
-  sha256: cf8c914ab6157b04e7dc13c5af7bac1fe46e355815fd9acec5dc67048c780918
+  version: 0.2.0
+  sha256: 6e0df773b000ffa0aa918dedd10fe770a3367de86625018fd34f8a5d9d62c8a6
   requires_python: '>=3.13'
 - conda: https://conda.anaconda.org/conda-forge/linux-64/coverage-7.13.5-py313h3dea7bd_0.conda
   sha256: 4b38c6648d0ccd6dca1d1e0d826609aaf2fabfd662257c1fff00bdd0e69e02da
