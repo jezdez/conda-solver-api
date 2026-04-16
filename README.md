@@ -156,45 +156,61 @@ Returns the OpenAPI 3.1 schema describing all endpoints.
 
 ## Docker
 
-Pre-built images are published to GitHub Container Registry on every
+Two image flavors are published to GitHub Container Registry on every
 release, for both `linux/amd64` and `linux/arm64`:
+
+- **Server** (`latest`) — starts the HTTP API by default
+- **CLI** (`cli`) — runs `conda resolve` directly, pass args after the image name
+
+### Server image
 
 ```bash
 docker run -p 8000:8000 ghcr.io/jezdez/conda-resolve:latest
 ```
 
-Available tags:
-
-| Tag | Example | Description |
-|---|---|---|
-| `latest` | `ghcr.io/jezdez/conda-resolve:latest` | Most recent release |
-| `<version>` | `ghcr.io/jezdez/conda-resolve:0.1.0` | Specific release |
-| `<major>.<minor>` | `ghcr.io/jezdez/conda-resolve:0.1` | Latest patch for a minor |
-| `<major>` | `ghcr.io/jezdez/conda-resolve:0` | Latest minor for a major |
-| `<sha>` | `ghcr.io/jezdez/conda-resolve:a1b2c3d` | Specific commit |
-
-To build locally:
-
-```bash
-docker build -t conda-resolve .
-docker run -p 8000:8000 conda-resolve
-```
-
-The image uses a multi-stage build: dependencies are installed with
-pixi in the build stage, and only the production environment is copied
-into a minimal `debian:bookworm-slim` runtime image. The server runs
-as a non-root user.
-
 The first startup takes ~20-30s while the repodata cache warms up.
 Subsequent solves use the in-memory cache and return in milliseconds.
-
-Multi-platform solve example:
 
 ```bash
 curl -X POST http://localhost:8000/resolve \
   -H 'Content-Type: application/json' \
   -d '{"specs": ["python=3.13"], "platforms": ["linux-64", "osx-arm64"]}'
 ```
+
+### CLI image
+
+```bash
+docker run ghcr.io/jezdez/conda-resolve:cli -c conda-forge -p linux-64 zlib
+
+docker run ghcr.io/jezdez/conda-resolve:cli -f environment.yml -p linux-64
+```
+
+### Available tags
+
+| Tag | Image | Description |
+|---|---|---|
+| `latest` | Server | Most recent server release |
+| `<version>` | Server | Specific release (e.g. `0.2.0`) |
+| `<major>.<minor>` | Server | Latest patch for a minor (e.g. `0.2`) |
+| `<major>` | Server | Latest minor for a major (e.g. `0`) |
+| `cli` | CLI | Most recent CLI release |
+| `<version>-cli` | CLI | Specific CLI release (e.g. `0.2.0-cli`) |
+| `<major>.<minor>-cli` | CLI | Latest CLI patch for a minor |
+
+### Building locally
+
+```bash
+docker build -f docker/server.Dockerfile -t conda-resolve .
+docker run -p 8000:8000 conda-resolve
+
+docker build -f docker/cli.Dockerfile -t conda-resolve-cli .
+docker run conda-resolve-cli -c conda-forge -p linux-64 zlib
+```
+
+Both images use a multi-stage build: dependencies are installed with
+pixi in the build stage, and only the runtime environment is copied
+into a minimal `debian:bookworm-slim` image. Both run as a non-root
+user.
 
 ## Development
 

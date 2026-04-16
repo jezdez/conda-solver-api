@@ -3,8 +3,8 @@ FROM ghcr.io/prefix-dev/pixi:0.67.0 AS build
 WORKDIR /app
 COPY pyproject.toml pixi.lock ./
 COPY conda_resolve/ conda_resolve/
-RUN pixi install --locked -e prod
-RUN pixi shell-hook -e prod -s bash > /shell-hook
+RUN pixi install --locked -e cli
+RUN pixi shell-hook -e cli -s bash > /shell-hook
 RUN echo '#!/bin/bash' > /app/entrypoint.sh \
     && cat /shell-hook >> /app/entrypoint.sh \
     && echo 'exec "$@"' >> /app/entrypoint.sh
@@ -15,15 +15,13 @@ RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --shell /usr/sbin/nologin --no-create-home app
 
 WORKDIR /app
-COPY --from=build /app/.pixi/envs/prod /app/.pixi/envs/prod
+COPY --from=build /app/.pixi/envs/cli /app/.pixi/envs/cli
 COPY --from=build --chmod=0755 /app/entrypoint.sh /app/entrypoint.sh
 COPY conda_resolve/ /app/conda_resolve/
 
-RUN mkdir -p /app/.pixi/envs/prod/pkgs/cache /home/app/.conda/pkgs \
-    && chown -R app:app /app/.pixi/envs/prod/pkgs /home/app
+RUN mkdir -p /app/.pixi/envs/cli/pkgs/cache /home/app/.conda/pkgs \
+    && chown -R app:app /app/.pixi/envs/cli/pkgs /home/app
 
 USER app
-EXPOSE 8000
 
-ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["uvicorn", "conda_resolve.app:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/app/entrypoint.sh", "conda", "resolve"]
