@@ -2866,8 +2866,8 @@ packages:
   timestamp: 1751548225624
 - pypi: ./
   name: conda-presto
-  version: 0.3.0
-  sha256: 17c207df6667699ad8343eb32cc438c553d3c8692bef1460880aeb59b779070b
+  version: 0.4.0
+  sha256: a637e1e77a17b90d60f22fd665cba0676516e624213725ef5f918af40f81265c
   requires_python: '>=3.13'
 - conda: https://conda.anaconda.org/conda-forge/noarch/conda-rattler-solver-0.0.6-pyhcf101f3_0.conda
   sha256: 07f361d11971a8305c64faedcd7546c1c0c67ebb95ff4b37ea2ce53472426151
